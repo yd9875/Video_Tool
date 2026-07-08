@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>⚡ 영상기획 TOOL ⚡</title>
+    <meta
+      name="description"
+      content="AI 연결 없이도 프로젝트를 저장하고 불러오며 콘티를 기획하는 동적 웹앱"
+    />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="프로젝트 패널">
+        <a class="brand" href="/" aria-label="영상기획 TOOL 홈">
+          <span class="brand-label">⚡ 영상기획 TOOL ⚡</span>
+        </a>
+
+        <section class="side-block">
+          <div class="side-row">
+            <div class="side-title">프로젝트</div>
+            <button class="icon-button small" id="newProject" type="button" aria-label="새 프로젝트">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="project-list" id="projectList" aria-live="polite"></div>
+        </section>
+
+        <section class="side-block">
+          <div class="side-title">현재 기획</div>
+          <label class="field compact">
+            <span>제목</span>
+            <input id="projectTitle" />
+          </label>
+          <label class="field compact">
+            <span>플랫폼</span>
+            <select id="platform">
+              <option>Instagram Reels</option>
+              <option>Instagram Feed</option>
+              <option>TikTok</option>
+              <option>YouTube Shorts</option>
+              <option>YouTube In-stream</option>
+              <option>YouTube Long Form</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>길이</span>
+            <div class="duration-control">
+              <label>
+                <input id="durationMinutes" type="number" min="0" max="999" step="1" value="0" aria-label="영상 길이 분" />
+                <span class="duration-unit">분</span>
+              </label>
+              <label>
+                <input id="durationSeconds" type="number" min="0" max="59" step="1" value="15" aria-label="영상 길이 초" />
+                <span class="duration-unit">초</span>
+              </label>
+            </div>
+          </label>
+        </section>
+
+        <section class="side-block">
+          <div class="side-title">AI 연결</div>
+          <div class="ai-config-group">
+            <div class="ai-config-title">대화 모델</div>
+            <label class="field compact">
+              <span>API 종류</span>
+              <select id="chatProviderInput">
+                <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span>API 키</span>
+              <input id="chatApiKeyInput" type="password" autocomplete="off" placeholder="sk-..." />
+            </label>
+            <label class="field compact">
+              <span>모델</span>
+              <select id="chatModelInput">
+                <option value="gpt-5.5">GPT-5.5</option>
+                <option value="gpt-5-mini">GPT-5 mini</option>
+                <option value="gpt-5">GPT-5</option>
+                <option value="gpt-5-nano">GPT-5 nano</option>
+                <option value="gpt-4.1-mini">GPT-4.1 mini</option>
+              </select>
+            </label>
+          </div>
+          <div class="ai-config-group">
+            <div class="ai-config-title">이미지 생성 모델</div>
+            <label class="field compact">
+              <span>API 종류</span>
+              <select id="imageProviderInput">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span>API 키</span>
+              <input id="imageApiKeyInput" type="password" autocomplete="off" placeholder="비워두면 대화 키 사용" />
+            </label>
+            <label class="field compact">
+              <span>모델</span>
+              <select id="imageModelInput">
+                <option value="gpt-image-1">GPT Image 1</option>
+                <option value="gpt-image-1-mini">GPT Image 1 mini</option>
+                <option value="gpt-image-1.5">GPT Image 1.5</option>
+              </select>
+            </label>
+          </div>
+          <div class="key-actions">
+            <button class="button secondary" id="saveApiKey" type="button">키 저장</button>
+            <button class="button secondary" id="clearApiKey" type="button">삭제</button>
+          </div>
+          <div class="api-status" id="apiStatus">로컬 모드</div>
+        </section>
+
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="top-actions">
+            <div class="status-stack">
+              <span class="save-status" id="saveStatus">불러오는 중</span>
+              <div class="ai-task-list" id="aiTaskList" aria-live="polite"></div>
+            </div>
+            <div class="top-button-group">
+              <button class="button primary" id="saveProject" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"></path>
+                  <path d="M17 21v-8H7v8"></path>
+                  <path d="M7 3v5h8"></path>
+                </svg>
+                저장
+              </button>
+              <button class="button secondary" id="copyStoryboard" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                  <rect x="2" y="2" width="13" height="13" rx="2"></rect>
+                </svg>
+                복사
+              </button>
+              <button class="button primary" id="exportStoryboard" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <path d="M7 10l5 5 5-5"></path>
+                  <path d="M12 15V3"></path>
+                </svg>
+                내보내기
+              </button>
+              <button class="button secondary" id="resetProject" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+                  <path d="M3 4v6h6"></path>
+                </svg>
+                내용 초기화
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <section class="format-panel" aria-labelledby="format-title">
+          <div>
+            <h2 id="format-title">작업 유형</h2>
+            <p>콘티의 목적과 영상 구성을 먼저 정합니다.</p>
+          </div>
+          <div class="format-controls">
+            <div class="choice-chips" role="radiogroup" aria-label="작업 유형">
+              <label class="choice-chip">
+                <input type="radio" name="contentType" value="범용 콘티" checked />
+                <span>범용 콘티</span>
+              </label>
+              <label class="choice-chip">
+                <input type="radio" name="contentType" value="숏폼 (보도자료 등)" />
+                <span>숏폼 (보도자료 등)</span>
+              </label>
+              <label class="choice-chip">
+                <input type="radio" name="contentType" value="롱폼 (홍보영상, 인터뷰 등)" />
+                <span>롱폼 (홍보영상, 인터뷰 등)</span>
+              </label>
+            </div>
+            <div class="longform-options" id="longformOptions" hidden>
+              <label>
+                <input type="radio" name="longformMode" value="Narration only" checked />
+                <span>Narration only</span>
+              </label>
+              <label>
+                <input type="radio" name="longformMode" value="Narration + Interview" />
+                <span>Narration + Interview</span>
+              </label>
+              <label>
+                <input type="radio" name="longformMode" value="Interview only" />
+                <span>Interview only</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="attachment-panel" aria-labelledby="attachment-title">
+          <div>
+            <h2 id="attachment-title">첨부 파일</h2>
+            <p>텍스트, 이미지, PDF, 음성 파일을 올려 AI가 직접 참고할 자료로 사용합니다.</p>
+          </div>
+          <div class="attachment-controls">
+            <label class="attachment-drop">
+              <input id="attachmentInput" type="file" multiple />
+              <span>파일 선택</span>
+            </label>
+            <div class="attachment-list" id="attachmentList" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section class="brief-panel" aria-labelledby="brief-title">
+          <div>
+            <h2 id="brief-title">브리프</h2>
+            <p>제품, 타깃, 메시지를 적으면 현재 프로젝트에 자동 저장됩니다.</p>
+          </div>
+          <textarea id="briefInput" aria-label="콘티 브리프" spellcheck="false"></textarea>
+        </section>
+
+        <section class="script-panel" id="scriptPanel" aria-labelledby="script-title" hidden>
+          <div>
+            <h2 id="script-title">대본 생성</h2>
+            <p>첨부 파일과 요구사항을 바탕으로 롱폼 대본 txt 파일을 생성합니다.</p>
+            <button class="button primary" id="generateScript" type="button">생성</button>
+          </div>
+          <div class="script-workspace">
+            <textarea id="scriptRequirements" rows="4" aria-label="대본 생성 요구사항" placeholder="대본 톤, 분량, 화자, 인터뷰 반영 방식 등 요구사항을 적어주세요."></textarea>
+            <div class="generated-file-list" id="scriptFileList" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <div class="work-grid">
+          <div class="chat-stack">
+            <section class="chat-panel" aria-labelledby="chat-title">
+              <div class="panel-head">
+                <div>
+                  <h2 id="chat-title">AI 대화</h2>
+                  <p id="modeLabel">작업 유형, 브리프, 첨부 파일, 장면을 함께 분석</p>
+                </div>
+                <div class="panel-actions">
+                  <button class="icon-button onepage-button" id="generateOnePage" type="button" aria-label="원페이지 콘티 생성">
+                    <span>One<br />Page</span>
+                  </button>
+                  <button class="icon-button" id="suggestPrompt" type="button" aria-label="질문 추천">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9 18h6"></path>
+                      <path d="M10 22h4"></path>
+                      <path d="M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2Z"></path>
+                      <path d="M12 6v3"></path>
+                      <path d="M10.5 9.5h3"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="messages" id="messages" aria-live="polite"></div>
+
+              <form class="composer" id="chatForm">
+                <textarea
+                  id="chatInput"
+                  rows="3"
+                  placeholder="예: 이 기준으로 아이디어 보드 만들어줘"
+                  aria-label="AI에게 보낼 메시지"
+                ></textarea>
+                <button class="icon-button send" type="submit" aria-label="메시지 보내기">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m22 2-7 20-4-9-9-4Z"></path>
+                    <path d="M22 2 11 13"></path>
+                  </svg>
+                </button>
+              </form>
+            </section>
+
+            <section class="generated-file-panel" aria-labelledby="generated-file-title">
+              <div>
+                <h2 id="generated-file-title">AI 생성 파일</h2>
+              </div>
+              <div class="generated-file-list" id="generatedFileList" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <section class="board-panel" aria-labelledby="board-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="board-title">아이디어 보드</h2>
+                <p><span id="sceneCount">0</span>개 장면</p>
+              </div>
+              <button class="button secondary" id="addScene" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14"></path>
+                  <path d="M5 12h14"></path>
+                </svg>
+                장면 추가
+              </button>
+            </div>
+
+            <div class="story-summary" id="storySummary"></div>
+            <div class="scene-list" id="sceneList"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <template id="sceneTemplate">
+      <article class="scene-card">
+        <div class="scene-index"></div>
+        <div class="scene-content">
+          <div class="scene-top">
+            <input class="scene-title" aria-label="장면 제목" />
+            <button class="icon-button move-scene-up" type="button" aria-label="장면 위로 이동">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m18 15-6-6-6 6"></path>
+              </svg>
+            </button>
+            <button class="icon-button move-scene-down" type="button" aria-label="장면 아래로 이동">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m6 9 6 6 6-6"></path>
+              </svg>
+            </button>
+            <button class="icon-button delete-scene" type="button" aria-label="장면 삭제">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4h8v2"></path>
+                <path d="M19 6l-1 14H6L5 6"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="scene-media">
+            <div class="scene-preview" aria-label="장면 시각 참고"></div>
+            <div class="scene-media-actions">
+              <label class="button secondary image-upload">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <path d="M17 8 12 3 7 8"></path>
+                  <path d="M12 3v12"></path>
+                </svg>
+                이미지
+                <input class="scene-image-input" type="file" accept="image/*" />
+              </label>
+              <button class="button secondary ai-sketch" type="button">AI 스케치</button>
+            </div>
+          </div>
+          <div class="scene-fields">
+            <label>
+              <span>화면</span>
+              <textarea class="scene-visual" rows="3"></textarea>
+            </label>
+            <label>
+              <span>자막/대사</span>
+              <textarea class="scene-copy" rows="2"></textarea>
+            </label>
+            <label>
+              <span>연출 메모</span>
+              <textarea class="scene-note" rows="2"></textarea>
+            </label>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
