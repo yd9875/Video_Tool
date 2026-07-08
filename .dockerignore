@@ -1,0 +1,10 @@
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+data/
+server-*.log
+server-start-*.log
+.DS_Store
+Thumbs.db
