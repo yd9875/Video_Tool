@@ -236,7 +236,7 @@ class DatabaseUnavailable(RuntimeError):
     pass
 
 
-def run_db(operation, attempts: int = 3):
+def run_db(operation, attempts: int = 8):
     if psycopg is None:
         raise DatabaseUnavailable("Database driver is not installed.")
 
@@ -247,9 +247,10 @@ def run_db(operation, attempts: int = 3):
                 return operation(conn)
         except psycopg.OperationalError as error:
             last_error = error
+            safe_print(f"Database operation failed on attempt {attempt + 1}/{attempts}: {error}")
             if attempt + 1 >= attempts:
                 break
-            time.sleep(0.25 * (attempt + 1))
+            time.sleep(min(0.5 * (attempt + 1), 3.0))
 
     raise DatabaseUnavailable("Database temporarily unavailable. Please try again.") from last_error
 
