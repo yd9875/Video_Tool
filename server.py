@@ -1228,6 +1228,9 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         if path == "/api/ai/onepage":
             self.handle_ai_onepage()
             return
+        if path == "/api/ai/onepage-image":
+            self.handle_ai_onepage_image()
+            return
         if path == "/api/ai/script":
             self.handle_ai_script()
             return
@@ -1441,6 +1444,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         model = str(payload.get("model") or "gpt-5-mini").strip()
         project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
         image_settings = payload.get("imageSettings") if isinstance(payload.get("imageSettings"), dict) else {}
+        defer_image = bool(payload.get("deferImage"))
         prompt = build_onepage_prompt(project)
         response_format = onepage_response_format()
 
@@ -1527,7 +1531,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
                 "content": pdf_text or text,
             }
         ]
-        if image_prompt:
+        if image_prompt and not defer_image:
             files.append(
                 {
                     "name": f"{title}-image.png",
@@ -1542,7 +1546,44 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             {
                 "text": str(result.get("assistant_message") or "원페이지 콘티 PDF와 이미지 파일을 생성했어요."),
                 "files": finalize_generated_files(files, image_settings),
+                "imagePrompt": image_prompt if defer_image else "",
+                "imageName": f"{title}-image.png" if image_prompt and defer_image else "",
                 "rawId": raw_id,
+            }
+        )
+
+    def handle_ai_onepage_image(self) -> None:
+        payload = self.read_json()
+        if payload is None:
+            return
+
+        prompt = str(payload.get("prompt") or "").strip()
+        name = str(payload.get("name") or "one-page-storyboard-image.png").strip() or "one-page-storyboard-image.png"
+        image_settings = payload.get("imageSettings") if isinstance(payload.get("imageSettings"), dict) else {}
+        if not prompt:
+            self.send_error_json(400, "Image prompt is required")
+            return
+
+        try:
+            generated = generate_image_file_from_prompt(prompt, name, image_settings)
+        except (HTTPError, URLError, ValueError, KeyError):
+            generated = None
+
+        if generated:
+            self.send_json({"files": [generated]})
+            return
+
+        self.send_json(
+            {
+                "files": [
+                    {
+                        "name": generated_file_name(name or "onepage-image-prompt", "txt"),
+                        "type": "txt",
+                        "mimeType": "text/plain",
+                        "encoding": "utf8",
+                        "content": f"One-page storyboard image generation prompt:\n{prompt}",
+                    }
+                ]
             }
         )
 

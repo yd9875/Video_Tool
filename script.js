@@ -1732,6 +1732,7 @@ async function generateOnePageFiles() {
         provider: elements.chatProviderInput.value || "openai",
         model: elements.chatModelInput.value.trim() || "gpt-5-mini",
         project: context.project,
+        deferImage: true,
         imageSettings: {
           apiKey: elements.imageApiKeyInput.value.trim() || apiKey,
           provider: elements.imageProviderInput.value || "openai",
@@ -1943,6 +1944,91 @@ function downloadGeneratedFile(file) {
   URL.revokeObjectURL(url);
 }
 
+async function generateOnePageFilesStable() {
+  const apiKey = elements.chatApiKeyInput.value.trim();
+  if (!apiKey) {
+    updateApiStatus("원페이지 생성에는 API 키가 필요합니다");
+    setSaveStatus("API 키 필요", "error");
+    return;
+  }
+
+  let context;
+  try {
+    context = await createProjectTaskContext();
+  } catch (error) {
+    console.error(error);
+    setSaveStatus(error.message, "error");
+    return;
+  }
+
+  const taskId = onePageTaskId(context.projectId);
+  if (isAiTaskRunning(taskId)) {
+    setSaveStatus("이 프로젝트의 원페이지 콘티가 이미 생성 중입니다", "pending");
+    return;
+  }
+
+  const imageSettings = {
+    apiKey: elements.imageApiKeyInput.value.trim() || apiKey,
+    provider: elements.imageProviderInput.value || "openai",
+    model: elements.imageModelInput.value.trim() || "gpt-image-1",
+    aspect: getSketchAspectForProject(context.project),
+  };
+
+  updateApiStatus("원페이지 콘티 생성 중");
+  setSaveStatus("원페이지 생성 중", "pending");
+  startAiTask(taskId, `${context.projectTitle} - 원페이지 콘티 생성`);
+  syncProjectActionLocks();
+
+  try {
+    await ensureAudioTranscriptionsForContext(context);
+    const result = await api("/api/ai/onepage", {
+      method: "POST",
+      body: JSON.stringify({
+        apiKey,
+        provider: elements.chatProviderInput.value || "openai",
+        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        project: context.project,
+        deferImage: true,
+        imageSettings,
+      }),
+    });
+
+    await updateProjectData(context.projectId, (project) => {
+      project.generatedFiles = mergeGeneratedFiles(result.files, project.generatedFiles || []);
+      appendProjectMessage(project, "assistant", result.text || "원페이지 콘티 PDF를 생성했어요. 이미지는 이어서 생성합니다.");
+      return project;
+    });
+
+    if (result.imagePrompt) {
+      updateApiStatus("원페이지 이미지 생성 중");
+      setSaveStatus("원페이지 이미지 생성 중", "pending");
+      const imageResult = await api("/api/ai/onepage-image", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: result.imagePrompt,
+          name: result.imageName || "one-page-storyboard-image.png",
+          imageSettings,
+        }),
+      });
+      await updateProjectData(context.projectId, (project) => {
+        project.generatedFiles = mergeGeneratedFiles(imageResult.files, project.generatedFiles || []);
+        return project;
+      });
+    }
+
+    updateApiStatus("원페이지 콘티 생성 완료");
+    setSaveStatus("원페이지 생성 완료", "saved");
+    finishAiTask(taskId, "완료", "done");
+  } catch (error) {
+    console.error(error);
+    updateApiStatus(`원페이지 오류: ${error.message}`);
+    setSaveStatus("원페이지 생성 실패", "error");
+    finishAiTask(taskId, "실패", "error");
+  } finally {
+    syncProjectActionLocks();
+  }
+}
+
 elements.chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = elements.chatInput.value.trim();
@@ -2038,7 +2124,7 @@ elements.saveApiKey.addEventListener("click", saveApiSettings);
 
 elements.clearApiKey.addEventListener("click", clearApiSettings);
 
-elements.generateOnePage.addEventListener("click", generateOnePageFiles);
+elements.generateOnePage.addEventListener("click", generateOnePageFilesStable);
 
 elements.generateScript.addEventListener("click", generateScriptFile);
 
