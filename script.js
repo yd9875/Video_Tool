@@ -211,8 +211,9 @@ function escapeHtml(value = "") {
 }
 
 async function api(path, options = {}) {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: isFormData ? { ...(options.headers || {}) } : { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
 
@@ -454,6 +455,13 @@ function syncProjectActionLocks() {
   elements.generateScript.disabled = isAiTaskRunning(scriptTaskId(state.currentProjectId));
 }
 
+function attachmentForSave(file = {}) {
+  return {
+    ...file,
+    dataUrl: "",
+  };
+}
+
 function projectPayload() {
   return {
     title: elements.projectTitle.value.trim() || "제목 없는 콘티",
@@ -464,7 +472,7 @@ function projectPayload() {
     brief: elements.briefInput.value.trim(),
     messages: state.messages,
     scenes: state.scenes,
-    attachments: state.attachments,
+    attachments: state.attachments.map(attachmentForSave),
     generatedFiles: state.generatedFiles,
     scriptFiles: state.scriptFiles,
     contentTypeLocked: state.contentTypeLocked,
@@ -559,6 +567,7 @@ async function saveCurrentProject() {
     upsertProjectSummary(saved);
     renderProjectList();
     setSaveStatus("저장됨", "saved");
+    return saved;
   } catch (error) {
     console.error(error);
     setSaveStatus(`저장 실패: ${error.message}`, "error");
@@ -1085,6 +1094,15 @@ function formatFileSize(size) {
 async function addAttachments(files) {
   const largeFileWarningSize = 25 * 1024 * 1024;
   let addedCount = 0;
+  window.clearTimeout(state.saveTimer);
+  if (!state.currentProjectId) {
+    setSaveStatus("첨부 전 프로젝트 저장 중", "pending");
+    await saveCurrentProject();
+  }
+  if (!state.currentProjectId) {
+    throw new Error("프로젝트 저장 후 첨부할 수 있습니다.");
+  }
+
   for (const file of files) {
     if (file.size > largeFileWarningSize) {
       setSaveStatus(`대용량 파일 첨부 중: ${file.name}`, "pending");
@@ -1092,24 +1110,21 @@ async function addAttachments(files) {
 
     try {
       const kind = getAttachmentKind(file);
-      const attachment = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        name: file.name,
-        type: file.type || "application/octet-stream",
-        kind,
-        size: file.size,
-        text: "",
-        dataUrl: "",
-      };
-
-      if (kind === "text") {
-        attachment.text = (await readFileAsText(file)).slice(0, 220000);
-      } else {
-        attachment.dataUrl = await readFileAsDataUrl(file);
-      }
-
+      const attachmentId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      formData.append("id", attachmentId);
+      formData.append("name", file.name);
+      formData.append("type", file.type || "application/octet-stream");
+      formData.append("kind", kind);
+      formData.append("size", String(file.size));
+      const attachment = await api(`/api/projects/${state.currentProjectId}/attachments`, {
+        method: "POST",
+        body: formData,
+      });
       state.attachments.push(attachment);
       addedCount += 1;
+      renderAttachments();
     } catch (error) {
       console.error(error);
       setSaveStatus(`첨부 실패: ${file.name}`, "error");
@@ -1118,8 +1133,7 @@ async function addAttachments(files) {
 
   renderAttachments();
   if (addedCount > 0) {
-    setSaveStatus(`${addedCount}개 파일 첨부됨`, "pending");
-    scheduleSave();
+    setSaveStatus(`${addedCount}개 파일 첨부됨`, "saved");
   }
 }
 
@@ -1161,11 +1175,20 @@ function renderAttachments() {
   });
 
   $$(".attachment-remove", elements.attachmentList).forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const id = button.closest(".attachment-item")?.dataset.attachmentId;
-      state.attachments = state.attachments.filter((file) => file.id !== id);
-      renderAttachments();
-      scheduleSave();
+      if (!id) return;
+      try {
+        if (state.currentProjectId) {
+          await api(`/api/projects/${state.currentProjectId}/attachments/${encodeURIComponent(id)}`, { method: "DELETE" });
+        }
+        state.attachments = state.attachments.filter((file) => file.id !== id);
+        renderAttachments();
+        setSaveStatus("첨부 삭제됨", "saved");
+      } catch (error) {
+        console.error(error);
+        setSaveStatus(`첨부 삭제 실패: ${error.message}`, "error");
+      }
     });
   });
 }
@@ -1197,7 +1220,7 @@ async function transcribeAttachment(id) {
   renderAttachments();
 
   try {
-    await transcribeAudioAttachment(attachment, apiKey);
+    await transcribeAudioAttachment(attachment, apiKey, context.projectId);
     await updateProjectData(context.projectId, (project) => {
       project.attachments = Array.isArray(project.attachments) ? project.attachments : [];
       const index = project.attachments.findIndex((file) => file.id === id);
@@ -1225,10 +1248,10 @@ function getTranscriptionApiKey() {
   return elements.chatApiKeyInput.value.trim();
 }
 
-async function transcribeAudioAttachment(attachment, apiKey) {
+async function transcribeAudioAttachment(attachment, apiKey, projectId = state.currentProjectId) {
   const result = await api("/api/ai/transcribe", {
     method: "POST",
-    body: JSON.stringify({ apiKey, attachment }),
+    body: JSON.stringify({ apiKey, projectId, attachmentId: attachment.id, attachment: attachmentForSave(attachment) }),
   });
   attachment.text = result.text || "";
   return attachment.text;
@@ -1249,7 +1272,7 @@ async function ensureAudioTranscriptions() {
     updateApiStatus("오디오 자동 전사 중");
     setSaveStatus("오디오 자동 전사 중", "pending");
     try {
-      await transcribeAudioAttachment(attachment, apiKey);
+      await transcribeAudioAttachment(attachment, apiKey, state.currentProjectId);
       finishAiTask(taskId, "완료", "done");
     } catch (error) {
       finishAiTask(taskId, "실패", "error");
@@ -1277,7 +1300,7 @@ async function ensureAudioTranscriptionsForContext(context) {
     updateApiStatus("오디오 자동 전사 중");
     setSaveStatus("오디오 자동 전사 중", "pending");
     try {
-      await transcribeAudioAttachment(attachment, apiKey);
+      await transcribeAudioAttachment(attachment, apiKey, context.projectId);
       finishAiTask(taskId, "완료", "done");
     } catch (error) {
       finishAiTask(taskId, "실패", "error");
@@ -2222,8 +2245,14 @@ elements.longformModeInputs.forEach((input) => {
 elements.attachmentInput.addEventListener("change", async (event) => {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
-  await addAttachments(files);
-  elements.attachmentInput.value = "";
+  try {
+    await addAttachments(files);
+  } catch (error) {
+    console.error(error);
+    setSaveStatus(`첨부 실패: ${error.message}`, "error");
+  } finally {
+    elements.attachmentInput.value = "";
+  }
 });
 
 ["dragenter", "dragover"].forEach((eventName) => {
@@ -2243,7 +2272,12 @@ elements.attachmentInput.addEventListener("change", async (event) => {
 elements.attachmentDrop.addEventListener("drop", async (event) => {
   const files = Array.from(event.dataTransfer?.files || []);
   if (!files.length) return;
-  await addAttachments(files);
+  try {
+    await addAttachments(files);
+  } catch (error) {
+    console.error(error);
+    setSaveStatus(`첨부 실패: ${error.message}`, "error");
+  }
 });
 
 [elements.durationMinutes, elements.durationSeconds].forEach((element) => {

@@ -12,6 +12,8 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -31,6 +33,8 @@ DATA_DIR = ROOT / "data"
 DATA_FILE = DATA_DIR / "projects.json"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 PROJECT_ID_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)$")
+PROJECT_ATTACHMENTS_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)/attachments$")
+PROJECT_ATTACHMENT_ID_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)/attachments/([a-zA-Z0-9_.-]+)$")
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
 OPENAI_TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions"
@@ -274,10 +278,14 @@ def ensure_store() -> None:
                     id TEXT NOT NULL,
                     position INTEGER NOT NULL,
                     data JSONB NOT NULL,
+                    file_data BYTEA,
+                    file_mime_type TEXT,
                     PRIMARY KEY (project_id, id)
                 )
                 """
             )
+            conn.execute("ALTER TABLE project_attachments ADD COLUMN IF NOT EXISTS file_data BYTEA")
+            conn.execute("ALTER TABLE project_attachments ADD COLUMN IF NOT EXISTS file_mime_type TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_generated_files (
@@ -362,6 +370,15 @@ def slim_generated_file(item: dict) -> dict:
     return slim
 
 
+def data_url_to_bytes(data_url: str) -> tuple[str, bytes] | None:
+    if not isinstance(data_url, str) or not data_url.startswith("data:") or "," not in data_url:
+        return None
+    try:
+        return decode_data_url(data_url)
+    except (ValueError, binascii.Error):
+        return None
+
+
 def project_for_db(project: dict) -> tuple[dict, list[dict], list[dict]]:
     stored = dict(project)
     attachments = project.get("attachments") if isinstance(project.get("attachments"), list) else []
@@ -389,6 +406,10 @@ def project_for_db(project: dict) -> tuple[dict, list[dict], list[dict]]:
 def replace_project_items(conn, table_name: str, project_id: str, items: list[dict]) -> None:
     if table_name not in {"project_attachments", "project_generated_files"}:
         raise ValueError("Unsupported project item table")
+    if table_name == "project_attachments":
+        sync_project_attachments(conn, project_id, items)
+        return
+
     conn.execute(f"DELETE FROM {table_name} WHERE project_id = %s", (project_id,))
     for index, item in enumerate(items):
         item_id = project_item_id(item)
@@ -402,9 +423,95 @@ def replace_project_items(conn, table_name: str, project_id: str, items: list[di
         )
 
 
-def fetch_project_items(conn, table_name: str, project_id: str) -> list[dict]:
+def sync_project_attachments(conn, project_id: str, items: list[dict]) -> None:
+    existing_rows = conn.execute(
+        "SELECT id, data, file_data, file_mime_type FROM project_attachments WHERE project_id = %s",
+        (project_id,),
+    ).fetchall()
+    existing = {
+        row[0]: {
+            "data": row[1] if isinstance(row[1], dict) else {},
+            "file_data": row[2],
+            "file_mime_type": row[3],
+        }
+        for row in existing_rows
+    }
+    incoming_ids = set()
+    normalized_items = []
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        item_id = project_item_id(next_item)
+        next_item["id"] = item_id
+        incoming_ids.add(item_id)
+        normalized_items.append((index, item_id, next_item))
+
+    for existing_id in existing:
+        if existing_id not in incoming_ids:
+            conn.execute("DELETE FROM project_attachments WHERE project_id = %s AND id = %s", (project_id, existing_id))
+
+    for index, item_id, item in normalized_items:
+        slim = slim_attachment(item)
+        decoded = data_url_to_bytes(str(item.get("dataUrl") or ""))
+        if decoded is None and item_id in existing:
+            existing_data = existing[item_id]["data"]
+            decoded = data_url_to_bytes(str(existing_data.get("dataUrl") or ""))
+
+        if decoded is not None:
+            mime_type, file_bytes = decoded
+            conn.execute(
+                """
+                INSERT INTO project_attachments (project_id, id, position, data, file_data, file_mime_type)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, id)
+                DO UPDATE SET
+                    position = EXCLUDED.position,
+                    data = EXCLUDED.data,
+                    file_data = EXCLUDED.file_data,
+                    file_mime_type = EXCLUDED.file_mime_type
+                """,
+                (project_id, item_id, index, Jsonb(slim), file_bytes, mime_type),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO project_attachments (project_id, id, position, data)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (project_id, id)
+                DO UPDATE SET position = EXCLUDED.position, data = EXCLUDED.data
+                """,
+                (project_id, item_id, index, Jsonb(slim)),
+            )
+
+
+def fetch_project_items(conn, table_name: str, project_id: str, include_file_data: bool = True) -> list[dict]:
     if table_name not in {"project_attachments", "project_generated_files"}:
         raise ValueError("Unsupported project item table")
+    if table_name == "project_attachments":
+        rows = conn.execute(
+            """
+            SELECT data, file_data, file_mime_type
+            FROM project_attachments
+            WHERE project_id = %s
+            ORDER BY position ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row[0]) if isinstance(row[0], dict) else {}
+            if include_file_data:
+                file_bytes = row[1]
+                mime_type = row[2] or item.get("type") or "application/octet-stream"
+                if file_bytes and not item.get("dataUrl"):
+                    item["dataUrl"] = f"data:{mime_type};base64,{base64.b64encode(bytes(file_bytes)).decode('ascii')}"
+            else:
+                item = slim_attachment(item)
+            items.append(item)
+        return items
+
     rows = conn.execute(
         f"SELECT data FROM {table_name} WHERE project_id = %s ORDER BY position ASC",
         (project_id,),
@@ -412,7 +519,7 @@ def fetch_project_items(conn, table_name: str, project_id: str) -> list[dict]:
     return [row[0] for row in rows if isinstance(row[0], dict)]
 
 
-def read_project(project_id: str) -> dict | None:
+def read_project(project_id: str, include_file_data: bool = True) -> dict | None:
     ensure_store()
     if DATABASE_URL:
         def fetch_one(conn):
@@ -420,7 +527,7 @@ def read_project(project_id: str) -> dict | None:
             if not row or not isinstance(row[0], dict):
                 return None
             project = dict(row[0])
-            attachments = fetch_project_items(conn, "project_attachments", project_id)
+            attachments = fetch_project_items(conn, "project_attachments", project_id, include_file_data=include_file_data)
             generated_files = fetch_project_items(conn, "project_generated_files", project_id)
             if attachments:
                 project["attachments"] = attachments
@@ -481,6 +588,124 @@ def delete_project(project_id: str) -> bool:
     if len(next_projects) == len(projects):
         return False
     write_projects(next_projects)
+    return True
+
+
+def project_from_payload(payload: dict) -> dict:
+    project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+    project_id = str(project.get("id") or payload.get("projectId") or "").strip()
+    if project_id:
+        stored_project = read_project(project_id, include_file_data=True)
+        if stored_project:
+            return stored_project
+    return project
+
+
+def attachment_kind(filename: str, mime_type: str) -> str:
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        return "pdf"
+    if mime_type.startswith("text/") or re.search(r"\.(txt|md|csv|json)$", filename, re.IGNORECASE):
+        return "text"
+    return "file"
+
+
+def attachment_text_from_bytes(file_bytes: bytes, kind: str, mime_type: str) -> str:
+    if kind != "text" and not mime_type.startswith("text/"):
+        return ""
+    return file_bytes.decode("utf-8", errors="replace")[:220000]
+
+
+def save_uploaded_attachment(project_id: str, attachment: dict, file_bytes: bytes) -> dict | None:
+    ensure_store()
+    attachment_id = project_item_id(attachment)
+    attachment["id"] = attachment_id
+    metadata = slim_attachment(attachment)
+    mime_type = str(metadata.get("type") or "application/octet-stream")
+
+    if DATABASE_URL:
+        def insert_attachment(conn):
+            row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
+            if not row or not isinstance(row[0], dict):
+                return None
+
+            position_row = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM project_attachments WHERE project_id = %s",
+                (project_id,),
+            ).fetchone()
+            position = int(position_row[0] if position_row else 0)
+            conn.execute(
+                """
+                INSERT INTO project_attachments (project_id, id, position, data, file_data, file_mime_type)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, id)
+                DO UPDATE SET
+                    position = EXCLUDED.position,
+                    data = EXCLUDED.data,
+                    file_data = EXCLUDED.file_data,
+                    file_mime_type = EXCLUDED.file_mime_type
+                """,
+                (project_id, attachment_id, position, Jsonb(metadata), file_bytes, mime_type),
+            )
+
+            project = dict(row[0])
+            project["attachments"] = fetch_project_items(conn, "project_attachments", project_id, include_file_data=False)
+            project["updatedAt"] = now_iso()
+            conn.execute(
+                "UPDATE projects SET data = %s, updated_at = %s WHERE id = %s",
+                (Jsonb(project), project["updatedAt"], project_id),
+            )
+            return metadata
+
+        return run_db(insert_attachment)
+
+    project = read_project(project_id)
+    if not project:
+        return None
+    project["attachments"] = project.get("attachments") if isinstance(project.get("attachments"), list) else []
+    project["attachments"].append(
+        {
+            **metadata,
+            "dataUrl": f"data:{mime_type};base64,{base64.b64encode(file_bytes).decode('ascii')}",
+        }
+    )
+    save_project(project)
+    return metadata
+
+
+def delete_project_attachment(project_id: str, attachment_id: str) -> bool:
+    ensure_store()
+    if DATABASE_URL:
+        def delete_one(conn):
+            cursor = conn.execute(
+                "DELETE FROM project_attachments WHERE project_id = %s AND id = %s",
+                (project_id, attachment_id),
+            )
+            row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
+            if row and isinstance(row[0], dict):
+                project = dict(row[0])
+                project["attachments"] = fetch_project_items(conn, "project_attachments", project_id, include_file_data=False)
+                project["updatedAt"] = now_iso()
+                conn.execute(
+                    "UPDATE projects SET data = %s, updated_at = %s WHERE id = %s",
+                    (Jsonb(project), project["updatedAt"], project_id),
+                )
+            return cursor.rowcount
+
+        return run_db(delete_one) > 0
+
+    project = read_project(project_id)
+    if not project:
+        return False
+    attachments = project.get("attachments") if isinstance(project.get("attachments"), list) else []
+    next_attachments = [item for item in attachments if not isinstance(item, dict) or str(item.get("id")) != attachment_id]
+    if len(next_attachments) == len(attachments):
+        return False
+    project["attachments"] = next_attachments
+    save_project(project)
     return True
 
 
@@ -1368,7 +1593,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         if match:
             project_id = match.group(1)
             try:
-                project = read_project(project_id)
+                project = read_project(project_id, include_file_data=False)
             except DatabaseUnavailable as error:
                 self.send_error_json(503, str(error))
                 return
@@ -1382,6 +1607,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        attachment_match = PROJECT_ATTACHMENTS_RE.match(path)
+        if attachment_match:
+            self.handle_project_attachment_upload(attachment_match.group(1))
+            return
+
         if path == "/api/ai/chat":
             self.handle_ai_chat()
             return
@@ -1432,7 +1662,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
         project_id = match.group(1)
         try:
-            existing = read_project(project_id)
+            existing = read_project(project_id, include_file_data=False)
         except DatabaseUnavailable as error:
             self.send_error_json(503, str(error))
             return
@@ -1450,7 +1680,24 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         self.send_json(project)
 
     def do_DELETE(self) -> None:
-        match = PROJECT_ID_RE.match(urlparse(self.path).path)
+        path = urlparse(self.path).path
+        attachment_match = PROJECT_ATTACHMENT_ID_RE.match(path)
+        if attachment_match:
+            project_id, attachment_id = attachment_match.groups()
+            try:
+                deleted = delete_project_attachment(project_id, attachment_id)
+            except DatabaseUnavailable as error:
+                self.send_error_json(503, str(error))
+                return
+            if not deleted:
+                self.send_error_json(404, "Attachment not found")
+                return
+            self.send_response(204)
+            self.send_cors_headers()
+            self.end_headers()
+            return
+
+        match = PROJECT_ID_RE.match(path)
         if not match:
             self.send_error_json(404, "Not found")
             return
@@ -1469,6 +1716,42 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
+    def handle_project_attachment_upload(self, project_id: str) -> None:
+        parsed = self.read_multipart_form()
+        if parsed is None:
+            return
+
+        fields, files = parsed
+        file_info = files.get("file")
+        if not file_info:
+            self.send_error_json(400, "Attachment file is required")
+            return
+
+        filename = str(fields.get("name") or file_info["filename"] or "attachment")
+        mime_type = str(fields.get("type") or file_info["content_type"] or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        file_bytes = file_info["data"]
+        kind = str(fields.get("kind") or attachment_kind(filename, mime_type))
+        attachment = {
+            "id": str(fields.get("id") or uuid.uuid4().hex),
+            "name": filename,
+            "type": mime_type,
+            "kind": kind,
+            "size": int(fields.get("size") or len(file_bytes)),
+            "text": str(fields.get("text") or attachment_text_from_bytes(file_bytes, kind, mime_type)),
+            "dataUrl": "",
+        }
+
+        try:
+            saved = save_uploaded_attachment(project_id, attachment, file_bytes)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
+
+        if not saved:
+            self.send_error_json(404, "Project not found")
+            return
+        self.send_json(saved, status=201)
+
     def handle_ai_chat(self) -> None:
         payload = self.read_json()
         if payload is None:
@@ -1482,7 +1765,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         provider = str(payload.get("provider") or "openai").strip()
         model = str(payload.get("model") or "gpt-5-mini").strip()
         user_message = str(payload.get("message") or "").strip()
-        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        try:
+            project = project_from_payload(payload)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         image_settings = payload.get("imageSettings") if isinstance(payload.get("imageSettings"), dict) else {}
         prompt = build_ai_prompt(user_message=user_message, project=project)
         response_format = storyboard_response_format()
@@ -1619,7 +1906,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
         provider = str(payload.get("provider") or "openai").strip()
         model = str(payload.get("model") or "gpt-5-mini").strip()
-        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        try:
+            project = project_from_payload(payload)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         image_settings = payload.get("imageSettings") if isinstance(payload.get("imageSettings"), dict) else {}
         defer_image = bool(payload.get("deferImage"))
         prompt = build_onepage_prompt(project)
@@ -1776,7 +2067,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
         provider = str(payload.get("provider") or "openai").strip()
         model = str(payload.get("model") or "gpt-5-mini").strip()
-        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        try:
+            project = project_from_payload(payload)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         requirements = str(payload.get("requirements") or "").strip()
         prompt = build_script_prompt(project, requirements)
         response_format = script_response_format()
@@ -1872,7 +2167,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
         provider = str(payload.get("provider") or "openai").strip()
         model = str(payload.get("model") or "gpt-5-mini").strip()
-        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        try:
+            project = project_from_payload(payload)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         prompt = build_suggestion_prompt(project)
         response_format = prompt_suggestion_response_format()
 
@@ -2020,6 +2319,17 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         attachment = payload.get("attachment") if isinstance(payload.get("attachment"), dict) else {}
+        project_id = str(payload.get("projectId") or "").strip()
+        attachment_id = str(payload.get("attachmentId") or attachment.get("id") or "").strip()
+        if project_id and attachment_id:
+            try:
+                project = read_project(project_id, include_file_data=True)
+            except DatabaseUnavailable as error:
+                self.send_error_json(503, str(error))
+                return
+            attachments = project.get("attachments") if isinstance(project, dict) and isinstance(project.get("attachments"), list) else []
+            attachment = next((item for item in attachments if isinstance(item, dict) and str(item.get("id")) == attachment_id), attachment)
+
         data_url = str(attachment.get("dataUrl") or "")
         if not data_url:
             self.send_error_json(400, "Audio file data is required")
@@ -2074,7 +2384,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             self.send_error_json(400, "API key is required")
             return
 
-        project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+        try:
+            project = project_from_payload(payload)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         scene = payload.get("scene") if isinstance(payload.get("scene"), dict) else {}
         scene_index = payload.get("sceneIndex") if isinstance(payload.get("sceneIndex"), int) else 0
         provider = str(payload.get("provider") or "openai").strip()
@@ -2167,6 +2481,42 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return None
 
         return payload
+
+    def read_multipart_form(self) -> tuple[dict[str, str], dict[str, dict]] | None:
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            self.send_error_json(400, "Content-Type must be multipart/form-data")
+            return None
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error_json(400, "Invalid Content-Length")
+            return None
+
+        raw = self.rfile.read(length) if length else b""
+        message = BytesParser(policy=email_policy).parsebytes(
+            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + raw
+        )
+        fields: dict[str, str] = {}
+        files: dict[str, dict] = {}
+
+        for part in message.iter_parts():
+            name = part.get_param("name", header="content-disposition")
+            if not name:
+                continue
+            payload = part.get_payload(decode=True) or b""
+            filename = part.get_filename()
+            if filename:
+                files[name] = {
+                    "filename": filename,
+                    "content_type": part.get_content_type() or "application/octet-stream",
+                    "data": payload,
+                }
+            else:
+                fields[name] = payload.decode("utf-8", errors="replace")
+
+        return fields, files
 
     def serve_static(self, path: str) -> None:
         clean_path = unquote(path.split("?", 1)[0]).lstrip("/") or "index.html"
