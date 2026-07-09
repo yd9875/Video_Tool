@@ -63,8 +63,7 @@ const elements = {
 };
 
 const defaultBrief = "";
-const API_BASE =
-  location.protocol === "file:" || location.port !== "8020" ? "http://127.0.0.1:8020" : "";
+const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8020" : "";
 const platformOptions = [
   "Instagram Reels",
   "Instagram Feed",
