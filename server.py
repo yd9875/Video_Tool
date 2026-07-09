@@ -266,6 +266,28 @@ def ensure_store() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_attachments (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    data JSONB NOT NULL,
+                    PRIMARY KEY (project_id, id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_generated_files (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    data JSONB NOT NULL,
+                    PRIMARY KEY (project_id, id)
+                )
+                """
+            )
             return None
 
         run_db(create_table)
@@ -304,10 +326,13 @@ def write_projects(projects: list[dict]) -> None:
                     continue
                 project_id = str(project.get("id") or uuid.uuid4().hex)
                 project["id"] = project_id
+                stored_project, attachments, generated_files = project_for_db(project)
                 conn.execute(
                     "INSERT INTO projects (id, data, updated_at) VALUES (%s, %s, %s)",
-                    (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
+                    (project_id, Jsonb(stored_project), str(project.get("updatedAt") or now_iso())),
                 )
+                replace_project_items(conn, "project_attachments", project_id, attachments)
+                replace_project_items(conn, "project_generated_files", project_id, generated_files)
             return None
 
         run_db(replace_all)
@@ -317,15 +342,92 @@ def write_projects(projects: list[dict]) -> None:
     DATA_FILE.write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def project_item_id(item: dict) -> str:
+    item_id = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
+    return item_id or uuid.uuid4().hex
+
+
+def slim_attachment(item: dict) -> dict:
+    slim = dict(item)
+    if slim.get("dataUrl"):
+        slim["dataUrl"] = ""
+    return slim
+
+
+def slim_generated_file(item: dict) -> dict:
+    slim = dict(item)
+    if slim.get("content"):
+        slim["content"] = ""
+    return slim
+
+
+def project_for_db(project: dict) -> tuple[dict, list[dict], list[dict]]:
+    stored = dict(project)
+    attachments = project.get("attachments") if isinstance(project.get("attachments"), list) else []
+    generated_files = project.get("generatedFiles") if isinstance(project.get("generatedFiles"), list) else []
+    normalized_attachments = []
+    normalized_generated_files = []
+
+    for item in attachments:
+        if isinstance(item, dict):
+            next_item = dict(item)
+            next_item["id"] = project_item_id(next_item)
+            normalized_attachments.append(next_item)
+
+    for item in generated_files:
+        if isinstance(item, dict):
+            next_item = dict(item)
+            next_item["id"] = project_item_id(next_item)
+            normalized_generated_files.append(next_item)
+
+    stored["attachments"] = [slim_attachment(item) for item in normalized_attachments]
+    stored["generatedFiles"] = [slim_generated_file(item) for item in normalized_generated_files]
+    return stored, normalized_attachments, normalized_generated_files
+
+
+def replace_project_items(conn, table_name: str, project_id: str, items: list[dict]) -> None:
+    if table_name not in {"project_attachments", "project_generated_files"}:
+        raise ValueError("Unsupported project item table")
+    conn.execute(f"DELETE FROM {table_name} WHERE project_id = %s", (project_id,))
+    for index, item in enumerate(items):
+        item_id = project_item_id(item)
+        item["id"] = item_id
+        conn.execute(
+            f"""
+            INSERT INTO {table_name} (project_id, id, position, data)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (project_id, item_id, index, Jsonb(item)),
+        )
+
+
+def fetch_project_items(conn, table_name: str, project_id: str) -> list[dict]:
+    if table_name not in {"project_attachments", "project_generated_files"}:
+        raise ValueError("Unsupported project item table")
+    rows = conn.execute(
+        f"SELECT data FROM {table_name} WHERE project_id = %s ORDER BY position ASC",
+        (project_id,),
+    ).fetchall()
+    return [row[0] for row in rows if isinstance(row[0], dict)]
+
+
 def read_project(project_id: str) -> dict | None:
     ensure_store()
     if DATABASE_URL:
         def fetch_one(conn):
             row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
-            return row
+            if not row or not isinstance(row[0], dict):
+                return None
+            project = dict(row[0])
+            attachments = fetch_project_items(conn, "project_attachments", project_id)
+            generated_files = fetch_project_items(conn, "project_generated_files", project_id)
+            if attachments:
+                project["attachments"] = attachments
+            if generated_files:
+                project["generatedFiles"] = generated_files
+            return project
 
-        row = run_db(fetch_one)
-        return row[0] if row and isinstance(row[0], dict) else None
+        return run_db(fetch_one)
 
     return next((item for item in read_projects() if item.get("id") == project_id), None)
 
@@ -335,6 +437,7 @@ def save_project(project: dict) -> dict:
     if DATABASE_URL:
         project_id = str(project.get("id") or uuid.uuid4().hex)
         project["id"] = project_id
+        stored_project, attachments, generated_files = project_for_db(project)
         def upsert(conn):
             conn.execute(
                 """
@@ -343,8 +446,10 @@ def save_project(project: dict) -> dict:
                 ON CONFLICT (id)
                 DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
                 """,
-                (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
+                (project_id, Jsonb(stored_project), str(project.get("updatedAt") or now_iso())),
             )
+            replace_project_items(conn, "project_attachments", project_id, attachments)
+            replace_project_items(conn, "project_generated_files", project_id, generated_files)
             return None
 
         run_db(upsert)
