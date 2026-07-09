@@ -6,6 +6,7 @@ const state = {
   attachments: [],
   generatedFiles: [],
   scriptFiles: [],
+  contentTypeLocked: false,
   aiTasks: [],
   isHydrating: false,
   saveTimer: null,
@@ -294,6 +295,17 @@ function isSceneRequest(userText) {
   const lower = userText.toLowerCase();
   const compact = lower.replace(/\s/g, "");
   const mentionsIdeaBoard = compact.includes("아이디어보드") || compact.includes("ideaboard");
+  const requestsStandaloneFileOrImage = [
+    "이미지",
+    "그림",
+    "파일",
+    "pdf",
+    "txt",
+    "스케치",
+    "원페이지",
+    "대본",
+    "다운로드",
+  ].some((word) => compact.includes(word));
   const mentionsSceneField = [
     "장면",
     "화면",
@@ -324,6 +336,7 @@ function isSceneRequest(userText) {
     "업데이트",
   ];
   const hasAction = actionWords.some((word) => compact.includes(word));
+  if (!mentionsIdeaBoard && requestsStandaloneFileOrImage) return false;
   return (mentionsIdeaBoard || (state.scenes.length > 0 && mentionsSceneField)) && hasAction;
 }
 
@@ -455,6 +468,7 @@ function projectPayload() {
     attachments: state.attachments,
     generatedFiles: state.generatedFiles,
     scriptFiles: state.scriptFiles,
+    contentTypeLocked: state.contentTypeLocked,
   };
 }
 
@@ -494,10 +508,20 @@ function setLongformMode(value = "Narration only") {
   });
 }
 
+function syncContentTypeLock() {
+  elements.contentTypeInputs.forEach((input) => {
+    input.disabled = state.contentTypeLocked;
+  });
+  elements.longformModeInputs.forEach((input) => {
+    input.disabled = state.contentTypeLocked;
+  });
+}
+
 function updateLongformOptions() {
   const isLongform = getContentType() === "롱폼 (홍보영상, 인터뷰 등)";
   elements.longformOptions.hidden = !isLongform;
   elements.scriptPanel.hidden = !isLongform;
+  syncContentTypeLock();
 }
 
 function getSketchAspect() {
@@ -546,18 +570,46 @@ function projectTitleLabel(project = {}) {
   return String(project.title || "제목 없는 프로젝트").trim() || "제목 없는 프로젝트";
 }
 
+function projectsByExactTitle(title) {
+  const normalizedTitle = String(title || "").trim();
+  if (!normalizedTitle) return [];
+  return state.projects.filter((project) => String(project.title || "").trim() === normalizedTitle);
+}
+
+function resolveProjectIdByExactTitle(title) {
+  const matches = projectsByExactTitle(title);
+  return matches.length === 1 ? matches[0].id : null;
+}
+
 async function createProjectTaskContext() {
   window.clearTimeout(state.saveTimer);
   const projectIdAtStart = state.currentProjectId;
+  const previousContentTypeLock = state.contentTypeLocked;
+  state.contentTypeLocked = true;
+  syncContentTypeLock();
   const payload = { ...projectPayload(), id: projectIdAtStart };
+  const titleMatches = projectIdAtStart ? [] : projectsByExactTitle(payload.title);
+  if (!projectIdAtStart && titleMatches.length > 1) {
+    state.contentTypeLocked = false;
+    syncContentTypeLock();
+    throw new Error("동일한 제목의 프로젝트가 여러 개 있습니다. 프로젝트 목록에서 작업할 프로젝트를 다시 선택한 뒤 AI 작업을 실행해주세요.");
+  }
+  const resolvedProjectId = projectIdAtStart || resolveProjectIdByExactTitle(payload.title);
   setSaveStatus("AI 작업용 프로젝트 저장 중", "pending");
-  const saved = await api(projectIdAtStart ? `/api/projects/${projectIdAtStart}` : "/api/projects", {
-    method: projectIdAtStart ? "PUT" : "POST",
-    body: JSON.stringify(payload),
-  });
+  let saved;
+  try {
+    saved = await api(resolvedProjectId ? `/api/projects/${resolvedProjectId}` : "/api/projects", {
+      method: resolvedProjectId ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    state.contentTypeLocked = previousContentTypeLock;
+    syncContentTypeLock();
+    throw error;
+  }
   const project = { ...payload, ...saved, id: saved.id };
   upsertProjectSummary(saved);
-  if (state.currentProjectId === projectIdAtStart) {
+  if (state.currentProjectId === projectIdAtStart || (!projectIdAtStart && resolvedProjectId)) {
     state.currentProjectId = saved.id;
     renderProjectList();
     setSaveStatus("저장됨", "saved");
@@ -691,6 +743,7 @@ function blankProject() {
     attachments: [],
     generatedFiles: [],
     scriptFiles: [],
+    contentTypeLocked: false,
   };
 }
 
@@ -702,6 +755,7 @@ function hydrateProject(project) {
   state.attachments = Array.isArray(project.attachments) ? project.attachments : [];
   state.generatedFiles = Array.isArray(project.generatedFiles) ? project.generatedFiles.map(normalizeGeneratedFile) : [];
   state.scriptFiles = Array.isArray(project.scriptFiles) ? project.scriptFiles.map(normalizeScriptFile) : [];
+  state.contentTypeLocked = Boolean(project.contentTypeLocked);
 
   elements.projectTitle.value = project.title ?? "";
   elements.platform.value = platformOptions.includes(project.platform) ? project.platform : "Instagram Reels";
@@ -709,6 +763,7 @@ function hydrateProject(project) {
   setContentType(project.contentType || "범용 콘티");
   setLongformMode(project.longformMode || "Narration only");
   updateLongformOptions();
+  syncContentTypeLock();
   elements.briefInput.value = project.brief ?? defaultBrief;
 
   elements.modeLabel.textContent = "작업 유형, 브리프, 첨부 파일, 장면을 함께 분석";
@@ -782,6 +837,7 @@ async function boot() {
       attachments: [],
       generatedFiles: [],
       scriptFiles: [],
+      contentTypeLocked: false,
     });
   }
 }
@@ -1236,19 +1292,84 @@ async function ensureAudioTranscriptionsForContext(context) {
   });
 }
 
+function sanitizeGeneratedFileType(value = "txt") {
+  return String(value || "txt")
+    .toLowerCase()
+    .replace(/[^a-z0-9.+_-]/g, "")
+    .slice(0, 32) || "txt";
+}
+
+function generatedFileExtension(type, mimeType = "") {
+  const cleanType = sanitizeGeneratedFileType(type);
+  const knownExtensions = {
+    image: "png",
+    txt: "txt",
+    pdf: "pdf",
+    md: "md",
+    csv: "csv",
+    json: "json",
+    html: "html",
+    xml: "xml",
+    docx: "docx",
+    xlsx: "xlsx",
+    pptx: "pptx",
+    zip: "zip",
+  };
+  if (knownExtensions[cleanType]) return knownExtensions[cleanType];
+
+  const mimeExtensions = {
+    "application/json": "json",
+    "text/markdown": "md",
+    "text/csv": "csv",
+    "text/html": "html",
+    "application/xml": "xml",
+    "text/xml": "xml",
+  };
+  const explicitMime = String(mimeType || "").toLowerCase();
+  if (mimeExtensions[explicitMime]) return mimeExtensions[explicitMime];
+
+  const suffix = cleanType.includes("+") ? cleanType.split("+").pop() : cleanType;
+  return suffix.replace(/[^a-z0-9]/g, "").slice(0, 12) || "bin";
+}
+
+function generatedFileMimeType(type, mimeType = "") {
+  const explicitMime = String(mimeType || "").trim();
+  if (explicitMime.includes("/")) return explicitMime;
+  const cleanType = sanitizeGeneratedFileType(type);
+  const knownMimeTypes = {
+    image: "image/png",
+    txt: "text/plain",
+    pdf: "application/pdf",
+    md: "text/markdown",
+    csv: "text/csv",
+    json: "application/json",
+    html: "text/html",
+    xml: "application/xml",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    zip: "application/zip",
+  };
+  return knownMimeTypes[cleanType] || "application/octet-stream";
+}
+
+function hasFileExtension(name) {
+  return /\.[a-z0-9][a-z0-9.+_-]{0,15}$/i.test(name);
+}
+
 function normalizeGeneratedFile(file = {}) {
-  const rawType = String(file.type || "").toLowerCase();
-  const type = rawType === "pdf" || rawType === "image" ? rawType : "txt";
-  const fallbackName = type === "pdf" ? "ai-file.pdf" : type === "image" ? "ai-image.png" : "ai-file.txt";
+  const type = sanitizeGeneratedFileType(file.type || "txt");
+  const mimeType = generatedFileMimeType(type, file.mimeType);
+  const extension = generatedFileExtension(type, mimeType);
+  const fallbackName = type === "image" ? "ai-image.png" : `ai-file.${extension}`;
   const rawName = String(file.name || fallbackName).trim() || fallbackName;
-  const extension = type === "pdf" ? ".pdf" : type === "image" ? ".png" : ".txt";
-  const name = rawName.toLowerCase().endsWith(extension) ? rawName : `${rawName}${extension}`;
+  const name = hasFileExtension(rawName) ? rawName : `${rawName}.${extension}`;
   const encoding = String(file.encoding || "utf8").toLowerCase() === "base64" ? "base64" : "utf8";
   return {
     id: String(file.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
     name,
     type,
-    mimeType: String(file.mimeType || (type === "pdf" ? "application/pdf" : type === "image" ? "image/png" : "text/plain")),
+    mimeType,
     encoding,
     content: String(file.content || ""),
     createdAt: file.createdAt || new Date().toISOString(),
@@ -1535,6 +1656,9 @@ async function generateReply(userText, context) {
   } catch (error) {
     console.error(error);
     updateApiStatus(`AI 오류: ${error.message}`);
+    const replyText = `AI 오류: ${error.message}`;
+    await updateProjectData(context.projectId, (project) => appendProjectMessage(project, "assistant", replyText));
+    return replyText;
   }
 
   const brief = context.project;
@@ -1952,12 +2076,14 @@ elements.resetProject.addEventListener("click", () => {
   state.attachments = [];
   state.generatedFiles = [];
   state.scriptFiles = [];
+  state.contentTypeLocked = false;
   elements.projectTitle.value = "";
   elements.briefInput.value = defaultBrief;
   elements.scriptRequirements.value = "";
   setContentType("범용 콘티");
   setLongformMode("Narration only");
   updateLongformOptions();
+  syncContentTypeLock();
   renderMessages();
   renderAttachments();
   renderGeneratedFiles();

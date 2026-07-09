@@ -54,12 +54,15 @@ def storyboard_response_format() -> dict:
         "additionalProperties": False,
         "properties": {
             "name": {"type": "string", "description": "download filename"},
-            "type": {"type": "string", "enum": ["txt", "pdf", "image"]},
-            "mimeType": {"type": "string", "description": "text/plain, application/pdf, or image/png"},
+            "type": {
+                "type": "string",
+                "description": "requested file type or extension, e.g. txt, pdf, image, md, csv, json, html, docx, xlsx, pptx",
+            },
+            "mimeType": {"type": "string", "description": "valid MIME type for the generated file"},
             "encoding": {"type": "string", "enum": ["utf8", "base64"]},
             "content": {
                 "type": "string",
-                "description": "txt body, pdf source text, image generation prompt, or base64 binary content",
+                "description": "file body/source text, image generation prompt, or base64 binary content",
             },
         },
         "required": ["name", "type", "mimeType", "encoding", "content"],
@@ -84,7 +87,7 @@ def storyboard_response_format() -> dict:
                     },
                     "files": {
                         "type": "array",
-                        "description": "선택적 다운로드 파일. 별도 파일이 꼭 필요할 때만 txt/pdf를 넣고, 보통은 빈 배열.",
+                        "description": "선택적 다운로드 파일. 사용자가 요청했거나 별도 파일이 꼭 필요할 때만 요청된 파일 유형으로 넣고, 보통은 빈 배열.",
                         "items": file_schema,
                     },
                 },
@@ -265,6 +268,7 @@ def normalize_project(payload: dict, existing: dict | None = None) -> dict:
             "attachments": payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
             "generatedFiles": payload.get("generatedFiles") if isinstance(payload.get("generatedFiles"), list) else [],
             "scriptFiles": payload.get("scriptFiles") if isinstance(payload.get("scriptFiles"), list) else [],
+            "contentTypeLocked": bool(payload.get("contentTypeLocked")),
             "updatedAt": timestamp,
         }
     )
@@ -392,10 +396,11 @@ def build_ai_prompt(user_message: str, project: dict) -> str:
 요청 정리, 확인사항, 질문, 분석, 기획 방향, 대본 검토, 구성 의견, 파일 내용 요약처럼 대화로 답할 수 있는 요청은 아이디어 보드를 수정하지 말고 scenes를 빈 배열로 둔다.
 사용자가 장면, 구성, 콘티, 스토리보드라는 단어를 썼더라도 아이디어 보드에 생성/수정/반영/적용하라는 의도가 명확하지 않으면 scenes를 빈 배열로 둔다.
 예외: 이미 아이디어 보드 장면이 있고 사용자가 "화면", "연출메모", "연출", "자막", "대사", "카피", "장면" 같은 장면 카드 필드를 수정/고쳐/바꿔/반영/적용/업데이트해달라고 하면 아이디어 보드 수정 요청으로 간주하고 scenes 배열을 채운다.
-파일 생성은 사용자가 명시적으로 txt/pdf/이미지 파일을 달라고 했거나, 긴 원문/별도 참고문서처럼 아이디어 보드에 넣기 부적절한 보조 산출물이 꼭 필요할 때만 files 배열에 넣는다.
+파일 생성은 사용자가 명시적으로 특정 파일을 달라고 했거나, 긴 원문/별도 참고문서처럼 아이디어 보드에 넣기 부적절한 보조 산출물이 꼭 필요할 때만 files 배열에 넣는다.
+파일 유형은 txt, pdf, image에 한정하지 말고 AI 모델이 실제로 생성 가능한 모든 유형을 사용할 수 있다. 단, 사용자가 원하는 파일 유형만 생성하고 쓸 데 없는 추가 파일은 만들지 않는다.
 PDF 파일을 요청받으면 type "pdf", encoding "utf8"로 두고 content에는 PDF에 들어갈 완성 문서 본문을 넣는다. 서버가 이 본문을 실제 PDF 파일로 변환한다.
 이미지 파일을 요청받으면 type "image", encoding "utf8"로 두고 content에는 이미지 생성 모델에 보낼 상세 프롬프트를 넣는다. 서버가 이 프롬프트로 실제 이미지를 생성한다.
-txt 파일은 type "txt", encoding "utf8"로 두고 content에 텍스트 본문을 넣는다.
+그 밖의 파일은 요청받은 확장자/type과 적절한 mimeType을 사용하고, encoding "utf8" 또는 "base64"로 실제 파일 내용만 content에 넣는다.
 파일이 필요하지 않으면 files는 항상 빈 배열이다.
 
 사용자가 아이디어 보드 생성/작성/구성/만들기를 명시하면 scenes 배열에 전체 아이디어 보드 장면을 넣는다.
@@ -404,7 +409,7 @@ txt 파일은 type "txt", encoding "utf8"로 두고 content에 텍스트 본문�
 장면 수정 원칙: 현재 장면 카드의 "자막/대사(copy)"는 사용자가 직접 편집한 최신 의도일 수 있으므로 매우 중요한 기준점이다.
 사용자가 자막/대사에 맞게 화면이나 연출메모를 수정해달라고 하면, 해당 장면의 copy를 절대 무시하지 말고 copy가 말하는 정보, 감정, 논리, 톤을 화면(visual)과 연출메모(note)에 구체적으로 반영한다.
 사용자가 copy 수정을 명시하지 않았다면 기존 copy는 그대로 유지하고, visual과 note를 copy에 맞게 다시 쓴다.
-특정 장면만 언급한 수정 요청이면 그 장면의 요청받은 필드를 중심으로 고치고, 나머지 장면은 현재 내용을 최대한 보존한다. 그래도 scenes 배열은 전체 장면 목록으로 반환한다.
+특정 장면만 언급한 수정 요청이면 그 장면의 요청받은 필드를 중심으로 고치고, 요청받지 않은 장면은 수정 없이 보존한다. 그래도 scenes 배열은 전체 장면 목록으로 반환한다.
 assistant_message는 간결하게 작성한다.
 
 [프로젝트]
@@ -694,23 +699,20 @@ def parse_ai_result(text: str) -> dict:
     for file in files:
         if not isinstance(file, dict):
             continue
-        file_type = str(file.get("type") or "txt").lower()
-        if file_type not in {"txt", "pdf", "image"}:
-            file_type = "txt"
+        file_type = sanitize_generated_file_type(file.get("type") or "txt")
         encoding = str(file.get("encoding") or "utf8").lower()
         if encoding not in {"utf8", "base64"}:
             encoding = "utf8"
         content = str(file.get("content") or "")
         if not content.strip():
             continue
+        mime_type = generated_mime_type(file_type, file.get("mimeType"))
+        extension = generated_file_extension(file_type, mime_type)
         normalized_files.append(
             {
-                "name": str(file.get("name") or ("ai-file.pdf" if file_type == "pdf" else "ai-file.txt")),
+                "name": generated_file_name(str(file.get("name") or f"ai-file.{extension}"), extension),
                 "type": file_type,
-                "mimeType": str(
-                    file.get("mimeType")
-                    or ("application/pdf" if file_type == "pdf" else "image/png" if file_type == "image" else "text/plain")
-                ),
+                "mimeType": mime_type,
                 "encoding": encoding,
                 "content": content,
             }
@@ -857,6 +859,42 @@ def generated_file_name(name: str, extension: str) -> str:
     return clean if clean.lower().endswith(f".{extension}") else f"{clean}.{extension}"
 
 
+def sanitize_generated_file_type(value: object, fallback: str = "txt") -> str:
+    clean = re.sub(r"[^a-z0-9.+_-]+", "", str(value or fallback).strip().lower())
+    return clean[:32] or fallback
+
+
+def generated_file_extension(file_type: str, mime_type: object = "") -> str:
+    clean_type = sanitize_generated_file_type(file_type)
+    if clean_type == "image":
+        return "png"
+    if clean_type in {"txt", "pdf", "md", "csv", "json", "html", "xml", "docx", "xlsx", "pptx", "zip"}:
+        return clean_type
+    guessed = mimetypes.guess_extension(str(mime_type or "").strip())
+    if guessed:
+        return guessed.lstrip(".")
+    if "+" in clean_type:
+        clean_type = clean_type.rsplit("+", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "", clean_type)[:12] or "bin"
+
+
+def generated_mime_type(file_type: str, mime_type: object = "") -> str:
+    explicit = str(mime_type or "").strip()
+    if "/" in explicit:
+        return explicit
+    clean_type = sanitize_generated_file_type(file_type)
+    if clean_type == "image":
+        return "image/png"
+    if clean_type == "txt":
+        return "text/plain"
+    guessed = mimetypes.guess_type(f"file.{generated_file_extension(clean_type)}")[0]
+    if guessed:
+        return guessed
+    if clean_type in {"md", "csv", "json", "html", "xml"}:
+        return "text/plain"
+    return "application/octet-stream"
+
+
 def pdf_base64_from_text(title: str, text: str) -> str:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -977,10 +1015,11 @@ def generate_image_file_from_prompt(prompt: str, name: str, image_settings: dict
 def finalize_generated_files(files: list[dict], image_settings: dict) -> list[dict]:
     finalized: list[dict] = []
     for file in files:
-        file_type = str(file.get("type") or "txt").lower()
+        file_type = sanitize_generated_file_type(file.get("type") or "txt")
         name = str(file.get("name") or "")
         content = str(file.get("content") or "")
         encoding = str(file.get("encoding") or "utf8").lower()
+        mime_type = generated_mime_type(file_type, file.get("mimeType"))
 
         if file_type == "pdf":
             if encoding == "base64":
@@ -1038,10 +1077,10 @@ def finalize_generated_files(files: list[dict], image_settings: dict) -> list[di
         finalized.append(
             {
                 **file,
-                "name": generated_file_name(name, "txt"),
-                "type": "txt",
-                "mimeType": "text/plain",
-                "encoding": "utf8",
+                "name": generated_file_name(name, generated_file_extension(file_type, mime_type)),
+                "type": file_type,
+                "mimeType": mime_type,
+                "encoding": "base64" if encoding == "base64" else "utf8",
             }
         )
     return finalized
