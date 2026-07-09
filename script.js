@@ -2002,18 +2002,38 @@ async function generateOnePageFilesStable() {
     if (result.imagePrompt) {
       updateApiStatus("원페이지 이미지 생성 중");
       setSaveStatus("원페이지 이미지 생성 중", "pending");
-      const imageResult = await api("/api/ai/onepage-image", {
-        method: "POST",
-        body: JSON.stringify({
-          prompt: result.imagePrompt,
-          name: result.imageName || "one-page-storyboard-image.png",
-          imageSettings,
-        }),
-      });
-      await updateProjectData(context.projectId, (project) => {
-        project.generatedFiles = mergeGeneratedFiles(imageResult.files, project.generatedFiles || []);
-        return project;
-      });
+      try {
+        const imageResult = await api("/api/ai/onepage-image", {
+          method: "POST",
+          body: JSON.stringify({
+            prompt: result.imagePrompt,
+            name: result.imageName || "one-page-storyboard-image.png",
+            imageSettings,
+          }),
+        });
+        await updateProjectData(context.projectId, (project) => {
+          project.generatedFiles = mergeGeneratedFiles(imageResult.files, project.generatedFiles || []);
+          return project;
+        });
+      } catch (imageError) {
+        console.error(imageError);
+        await updateProjectData(context.projectId, (project) => {
+          project.generatedFiles = mergeGeneratedFiles(
+            [
+              {
+                name: `${result.imageName || "one-page-storyboard-image"}.txt`,
+                type: "txt",
+                mimeType: "text/plain",
+                encoding: "utf8",
+                content: `원페이지 이미지 생성은 실패했지만 PDF는 생성되었습니다.\n\n오류: ${imageError.message}\n\n이미지 생성 프롬프트:\n${result.imagePrompt}`,
+              },
+            ],
+            project.generatedFiles || []
+          );
+          appendProjectMessage(project, "assistant", `원페이지 PDF는 생성했지만 이미지 생성은 실패했어요: ${imageError.message}`);
+          return project;
+        });
+      }
     }
 
     updateApiStatus("원페이지 콘티 생성 완료");
