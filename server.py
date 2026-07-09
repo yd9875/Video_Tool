@@ -1265,10 +1265,14 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
         project_id = match.group(1)
         existing = read_project(project_id)
+        if not existing:
+            self.send_error_json(404, "Project not found")
+            return
+
         payload["id"] = project_id
         project = normalize_project(payload, existing=existing)
         save_project(project)
-        self.send_json(project, status=201 if existing is None else 200)
+        self.send_json(project)
 
     def do_DELETE(self) -> None:
         match = PROJECT_ID_RE.match(urlparse(self.path).path)
