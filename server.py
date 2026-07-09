@@ -9,6 +9,7 @@ import io
 import os
 import re
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -231,11 +232,31 @@ def default_project() -> dict:
     }
 
 
+class DatabaseUnavailable(RuntimeError):
+    pass
+
+
+def run_db(operation, attempts: int = 3):
+    if psycopg is None:
+        raise DatabaseUnavailable("Database driver is not installed.")
+
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            with psycopg.connect(DATABASE_URL, connect_timeout=5) as conn:
+                return operation(conn)
+        except psycopg.OperationalError as error:
+            last_error = error
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(0.25 * (attempt + 1))
+
+    raise DatabaseUnavailable("Database temporarily unavailable. Please try again.") from last_error
+
+
 def ensure_store() -> None:
     if DATABASE_URL:
-        if psycopg is None:
-            raise RuntimeError("DATABASE_URL is set but psycopg is not installed.")
-        with psycopg.connect(DATABASE_URL) as conn:
+        def create_table(conn):
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
@@ -245,6 +266,9 @@ def ensure_store() -> None:
                 )
                 """
             )
+            return None
+
+        run_db(create_table)
         return
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -255,8 +279,11 @@ def ensure_store() -> None:
 def read_projects() -> list[dict]:
     ensure_store()
     if DATABASE_URL:
-        with psycopg.connect(DATABASE_URL) as conn:
+        def fetch_all(conn):
             rows = conn.execute("SELECT data FROM projects ORDER BY updated_at DESC").fetchall()
+            return rows
+
+        rows = run_db(fetch_all)
         projects = [row[0] for row in rows]
         return [project for project in projects if isinstance(project, dict)]
 
@@ -270,7 +297,7 @@ def read_projects() -> list[dict]:
 def write_projects(projects: list[dict]) -> None:
     if DATABASE_URL:
         ensure_store()
-        with psycopg.connect(DATABASE_URL) as conn:
+        def replace_all(conn):
             conn.execute("DELETE FROM projects")
             for project in projects:
                 if not isinstance(project, dict):
@@ -281,6 +308,9 @@ def write_projects(projects: list[dict]) -> None:
                     "INSERT INTO projects (id, data, updated_at) VALUES (%s, %s, %s)",
                     (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
                 )
+            return None
+
+        run_db(replace_all)
         return
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -290,8 +320,11 @@ def write_projects(projects: list[dict]) -> None:
 def read_project(project_id: str) -> dict | None:
     ensure_store()
     if DATABASE_URL:
-        with psycopg.connect(DATABASE_URL) as conn:
+        def fetch_one(conn):
             row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
+            return row
+
+        row = run_db(fetch_one)
         return row[0] if row and isinstance(row[0], dict) else None
 
     return next((item for item in read_projects() if item.get("id") == project_id), None)
@@ -302,7 +335,7 @@ def save_project(project: dict) -> dict:
     if DATABASE_URL:
         project_id = str(project.get("id") or uuid.uuid4().hex)
         project["id"] = project_id
-        with psycopg.connect(DATABASE_URL) as conn:
+        def upsert(conn):
             conn.execute(
                 """
                 INSERT INTO projects (id, data, updated_at)
@@ -312,6 +345,9 @@ def save_project(project: dict) -> dict:
                 """,
                 (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
             )
+            return None
+
+        run_db(upsert)
         return project
 
     projects = read_projects()
@@ -328,9 +364,11 @@ def save_project(project: dict) -> dict:
 def delete_project(project_id: str) -> bool:
     ensure_store()
     if DATABASE_URL:
-        with psycopg.connect(DATABASE_URL) as conn:
+        def delete_one(conn):
             cursor = conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
-            return cursor.rowcount > 0
+            return cursor.rowcount
+
+        return run_db(delete_one) > 0
 
     projects = read_projects()
     next_projects = [project for project in projects if project.get("id") != project_id]
@@ -1002,11 +1040,19 @@ def pdf_base64_from_text(title: str, text: str) -> str:
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
     font_name = "Helvetica"
-    korean_font = Path(r"C:\Windows\Fonts\malgun.ttf")
-    if korean_font.exists():
-        font_name = "MalgunGothic"
+    font_candidates = [
+        ("NanumGothic", Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf")),
+        ("NanumGothic", Path("/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf")),
+        ("MalgunGothic", Path(r"C:\Windows\Fonts\malgun.ttf")),
+        ("MalgunGothic", Path(r"C:\Windows\Fonts\malgunbd.ttf")),
+    ]
+    for candidate_name, candidate_path in font_candidates:
+        if not candidate_path.exists():
+            continue
+        font_name = candidate_name
         if font_name not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(TTFont(font_name, str(korean_font)))
+            pdfmetrics.registerFont(TTFont(font_name, str(candidate_path)))
+        break
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1204,14 +1250,22 @@ class StoryboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/projects":
-            projects = sorted(read_projects(), key=lambda item: item.get("updatedAt", ""), reverse=True)
+            try:
+                projects = sorted(read_projects(), key=lambda item: item.get("updatedAt", ""), reverse=True)
+            except DatabaseUnavailable as error:
+                self.send_error_json(503, str(error))
+                return
             self.send_json([project_summary(project) for project in projects])
             return
 
         match = PROJECT_ID_RE.match(path)
         if match:
             project_id = match.group(1)
-            project = read_project(project_id)
+            try:
+                project = read_project(project_id)
+            except DatabaseUnavailable as error:
+                self.send_error_json(503, str(error))
+                return
             if not project:
                 self.send_error_json(404, "Project not found")
                 return
@@ -1253,7 +1307,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         project = normalize_project(payload)
-        save_project(project)
+        try:
+            save_project(project)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         self.send_json(project, status=201)
 
     def do_PUT(self) -> None:
@@ -1267,14 +1325,22 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         project_id = match.group(1)
-        existing = read_project(project_id)
+        try:
+            existing = read_project(project_id)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         if not existing:
             self.send_error_json(404, "Project not found")
             return
 
         payload["id"] = project_id
         project = normalize_project(payload, existing=existing)
-        save_project(project)
+        try:
+            save_project(project)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
         self.send_json(project)
 
     def do_DELETE(self) -> None:
@@ -1284,7 +1350,12 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         project_id = match.group(1)
-        if not delete_project(project_id):
+        try:
+            deleted = delete_project(project_id)
+        except DatabaseUnavailable as error:
+            self.send_error_json(503, str(error))
+            return
+        if not deleted:
             self.send_error_json(404, "Project not found")
             return
 
