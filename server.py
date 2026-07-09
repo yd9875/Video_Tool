@@ -6,6 +6,7 @@ import argparse
 import base64
 import binascii
 import io
+import os
 import re
 import sys
 import uuid
@@ -16,10 +17,18 @@ from urllib.parse import unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+try:
+    import psycopg
+    from psycopg.types.json import Jsonb
+except ImportError:  # pragma: no cover - optional unless DATABASE_URL is set
+    psycopg = None
+    Jsonb = None
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_FILE = DATA_DIR / "projects.json"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 PROJECT_ID_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)$")
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
@@ -223,6 +232,21 @@ def default_project() -> dict:
 
 
 def ensure_store() -> None:
+    if DATABASE_URL:
+        if psycopg is None:
+            raise RuntimeError("DATABASE_URL is set but psycopg is not installed.")
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        return
+
     DATA_DIR.mkdir(exist_ok=True)
     if not DATA_FILE.exists():
         DATA_FILE.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding="utf-8")
@@ -230,6 +254,12 @@ def ensure_store() -> None:
 
 def read_projects() -> list[dict]:
     ensure_store()
+    if DATABASE_URL:
+        with psycopg.connect(DATABASE_URL) as conn:
+            rows = conn.execute("SELECT data FROM projects ORDER BY updated_at DESC").fetchall()
+        projects = [row[0] for row in rows]
+        return [project for project in projects if isinstance(project, dict)]
+
     try:
         data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -238,8 +268,76 @@ def read_projects() -> list[dict]:
 
 
 def write_projects(projects: list[dict]) -> None:
+    if DATABASE_URL:
+        ensure_store()
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("DELETE FROM projects")
+            for project in projects:
+                if not isinstance(project, dict):
+                    continue
+                project_id = str(project.get("id") or uuid.uuid4().hex)
+                project["id"] = project_id
+                conn.execute(
+                    "INSERT INTO projects (id, data, updated_at) VALUES (%s, %s, %s)",
+                    (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
+                )
+        return
+
     DATA_DIR.mkdir(exist_ok=True)
     DATA_FILE.write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_project(project_id: str) -> dict | None:
+    ensure_store()
+    if DATABASE_URL:
+        with psycopg.connect(DATABASE_URL) as conn:
+            row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
+        return row[0] if row and isinstance(row[0], dict) else None
+
+    return next((item for item in read_projects() if item.get("id") == project_id), None)
+
+
+def save_project(project: dict) -> dict:
+    ensure_store()
+    if DATABASE_URL:
+        project_id = str(project.get("id") or uuid.uuid4().hex)
+        project["id"] = project_id
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (id, data, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
+                """,
+                (project_id, Jsonb(project), str(project.get("updatedAt") or now_iso())),
+            )
+        return project
+
+    projects = read_projects()
+    for index, existing in enumerate(projects):
+        if existing.get("id") == project.get("id"):
+            projects[index] = project
+            write_projects(projects)
+            return project
+    projects.append(project)
+    write_projects(projects)
+    return project
+
+
+def delete_project(project_id: str) -> bool:
+    ensure_store()
+    if DATABASE_URL:
+        with psycopg.connect(DATABASE_URL) as conn:
+            cursor = conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            return cursor.rowcount > 0
+
+    projects = read_projects()
+    next_projects = [project for project in projects if project.get("id") != project_id]
+    if len(next_projects) == len(projects):
+        return False
+    write_projects(next_projects)
+    return True
 
 
 def project_summary(project: dict) -> dict:
@@ -254,7 +352,7 @@ def project_summary(project: dict) -> dict:
 
 def normalize_project(payload: dict, existing: dict | None = None) -> dict:
     timestamp = now_iso()
-    base = existing.copy() if existing else {"id": uuid.uuid4().hex, "createdAt": timestamp}
+    base = existing.copy() if existing else {"id": str(payload.get("id") or uuid.uuid4().hex), "createdAt": timestamp}
     base.update(
         {
             "title": str(payload.get("title") or "새 콘티"),
@@ -1113,7 +1211,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         match = PROJECT_ID_RE.match(path)
         if match:
             project_id = match.group(1)
-            project = next((item for item in read_projects() if item.get("id") == project_id), None)
+            project = read_project(project_id)
             if not project:
                 self.send_error_json(404, "Project not found")
                 return
@@ -1151,10 +1249,8 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         if payload is None:
             return
 
-        projects = read_projects()
         project = normalize_project(payload)
-        projects.append(project)
-        write_projects(projects)
+        save_project(project)
         self.send_json(project, status=201)
 
     def do_PUT(self) -> None:
@@ -1168,15 +1264,11 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         project_id = match.group(1)
-        projects = read_projects()
-        for index, project in enumerate(projects):
-            if project.get("id") == project_id:
-                projects[index] = normalize_project(payload, existing=project)
-                write_projects(projects)
-                self.send_json(projects[index])
-                return
-
-        self.send_error_json(404, "Project not found")
+        existing = read_project(project_id)
+        payload["id"] = project_id
+        project = normalize_project(payload, existing=existing)
+        save_project(project)
+        self.send_json(project, status=201 if existing is None else 200)
 
     def do_DELETE(self) -> None:
         match = PROJECT_ID_RE.match(urlparse(self.path).path)
@@ -1185,13 +1277,10 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         project_id = match.group(1)
-        projects = read_projects()
-        next_projects = [project for project in projects if project.get("id") != project_id]
-        if len(next_projects) == len(projects):
+        if not delete_project(project_id):
             self.send_error_json(404, "Project not found")
             return
 
-        write_projects(next_projects)
         self.send_response(204)
         self.send_cors_headers()
         self.end_headers()
