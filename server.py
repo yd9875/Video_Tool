@@ -1292,14 +1292,15 @@ def parse_ai_result(text: str) -> dict:
 
 
 def summarize_openai_error(detail: str) -> str:
+    detail = detail.strip()
     try:
         payload = json.loads(detail)
     except json.JSONDecodeError:
-        return detail[:400] or "OpenAI API error"
+        return detail[:400] or "AI provider error"
 
     error = payload.get("error") if isinstance(payload, dict) else None
     if isinstance(error, dict):
-        return str(error.get("message") or "OpenAI API error")
+        return str(error.get("message") or "AI provider error")
     return str(payload)[:400]
 
 
@@ -2178,6 +2179,10 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         except DatabaseUnavailable as error:
             self.send_error_json(503, str(error))
             return
+        except Exception as error:
+            safe_print(f"Script project load failed: {error}")
+            self.send_error_json(502, f"Project data load failed: {error}")
+            return
         requirements = str(payload.get("requirements") or "").strip()
         prompt = build_script_prompt(project, requirements)
         response_format = script_response_format()
@@ -2233,10 +2238,16 @@ class StoryboardHandler(BaseHTTPRequestHandler):
                 return
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
-            self.send_error_json(error.code, summarize_openai_error(detail))
+            message = summarize_openai_error(detail)
+            safe_print(f"{provider} script request failed ({error.code}): {message}")
+            self.send_error_json(error.code, f"{provider} script request failed ({error.code}): {message}")
             return
         except URLError as error:
             self.send_error_json(502, f"Script request failed: {error.reason}")
+            return
+        except Exception as error:
+            safe_print(f"{provider} script request failed: {error}")
+            self.send_error_json(502, f"{provider} script request failed: {error}")
             return
 
         try:
