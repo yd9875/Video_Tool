@@ -86,7 +86,9 @@ p {
 
 .brand {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  gap: 0.35rem;
   width: 100%;
   min-height: 3rem;
 }
@@ -105,6 +107,14 @@ p {
   font-size: 1.02rem;
   font-weight: 900;
   letter-spacing: 0;
+}
+
+.brand-release {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
 }
 
 .side-block {

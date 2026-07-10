@@ -17,6 +17,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --local-only -a videotoolugah
+      - name: Resolve Fly release version
+        id: fly_release
+        run: |
+          flyctl releases -a videotoolugah --json > releases.json
+          NEXT_VERSION="$(python3 - <<'PY'
+          import json
+
+          with open("releases.json", "r", encoding="utf-8") as handle:
+              releases = json.load(handle)
+
+          versions = [
+              int(item.get("Version", 0))
+              for item in releases
+              if str(item.get("Status", "")).lower() in {"complete", "running"}
+          ]
+          print((max(versions) if versions else 0) + 1)
+          PY
+          )"
+          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - run: flyctl deploy --local-only -a videotoolugah --build-arg APP_RELEASE_VERSION=${{ steps.fly_release.outputs.version }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

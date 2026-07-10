@@ -19,6 +19,7 @@ const elements = {
   projectList: $("#projectList"),
   newProject: $("#newProject"),
   projectTitle: $("#projectTitle"),
+  releaseBadge: $("#releaseBadge"),
   platform: $("#platform"),
   durationMinutes: $("#durationMinutes"),
   durationSeconds: $("#durationSeconds"),
@@ -224,6 +225,18 @@ async function api(path, options = {}) {
 
   if (response.status === 204) return null;
   return response.json();
+}
+
+async function loadRuntimeInfo() {
+  if (!elements.releaseBadge) return;
+  try {
+    const info = await api("/api/runtime");
+    const releaseVersion = String(info.releaseVersion || "").trim();
+    elements.releaseBadge.textContent = releaseVersion ? `ver.${releaseVersion}` : "ver.local";
+  } catch (error) {
+    console.warn("Runtime info unavailable", error);
+    elements.releaseBadge.textContent = "ver.local";
+  }
 }
 
 function loadApiSettings() {
@@ -2289,4 +2302,5 @@ elements.attachmentDrop.addEventListener("drop", async (event) => {
 });
 
 loadApiSettings();
+loadRuntimeInfo();
 boot();

@@ -260,6 +260,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def runtime_info() -> dict:
+    return {
+        "releaseVersion": os.environ.get("APP_RELEASE_VERSION", "").strip(),
+        "appName": os.environ.get("FLY_APP_NAME", "").strip(),
+    }
+
+
 def default_project() -> dict:
     timestamp = now_iso()
     return {
@@ -1684,6 +1691,10 @@ class StoryboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/runtime":
+            self.send_json(runtime_info())
+            return
+
         if path == "/api/projects":
             try:
                 projects = sorted(read_projects(), key=lambda item: item.get("updatedAt", ""), reverse=True)
