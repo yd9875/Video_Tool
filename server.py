@@ -27,11 +27,21 @@ except ImportError:  # pragma: no cover - optional unless DATABASE_URL is set
     psycopg = None
     Jsonb = None
 
+try:
+    import boto3
+except ImportError:  # pragma: no cover - optional unless R2 is configured
+    boto3 = None
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_FILE = DATA_DIR / "projects.json"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "").strip()
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "").strip()
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "").strip()
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
+R2_ENDPOINT_URL = os.environ.get("R2_ENDPOINT_URL", "").strip()
 PROJECT_ID_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)$")
 PROJECT_ATTACHMENTS_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)/attachments$")
 PROJECT_ATTACHMENT_ID_RE = re.compile(r"^/api/projects/([a-zA-Z0-9_-]+)/attachments/([a-zA-Z0-9_.-]+)$")
@@ -49,6 +59,66 @@ def safe_print(message: str) -> None:
             print(message)
     except Exception:
         pass
+
+
+_R2_CLIENT = None
+
+
+def r2_is_configured() -> bool:
+    return bool(
+        boto3
+        and R2_BUCKET_NAME
+        and R2_ACCESS_KEY_ID
+        and R2_SECRET_ACCESS_KEY
+        and (R2_ENDPOINT_URL or R2_ACCOUNT_ID)
+    )
+
+
+def r2_client():
+    global _R2_CLIENT
+    if not r2_is_configured():
+        return None
+    if _R2_CLIENT is None:
+        endpoint_url = R2_ENDPOINT_URL or f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+        _R2_CLIENT = boto3.client(
+            service_name="s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            region_name="auto",
+        )
+    return _R2_CLIENT
+
+
+def safe_storage_name(value: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", value or "file").strip(".-")
+    return stem[:120] or "file"
+
+
+def r2_attachment_key(project_id: str, attachment_id: str, filename: str) -> str:
+    return f"projects/{safe_storage_name(project_id)}/attachments/{safe_storage_name(attachment_id)}/{safe_storage_name(filename)}"
+
+
+def r2_put_object(key: str, file_bytes: bytes, mime_type: str) -> bool:
+    client = r2_client()
+    if not client:
+        return False
+    client.put_object(Bucket=R2_BUCKET_NAME, Key=key, Body=file_bytes, ContentType=mime_type)
+    return True
+
+
+def r2_get_object(key: str) -> bytes | None:
+    client = r2_client()
+    if not client or not key:
+        return None
+    response = client.get_object(Bucket=R2_BUCKET_NAME, Key=key)
+    return response["Body"].read()
+
+
+def r2_delete_object(key: str) -> None:
+    client = r2_client()
+    if client and key:
+        client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
 
 
 def storyboard_response_format() -> dict:
@@ -450,6 +520,12 @@ def sync_project_attachments(conn, project_id: str, items: list[dict]) -> None:
 
     for existing_id in existing:
         if existing_id not in incoming_ids:
+            existing_data = existing[existing_id]["data"]
+            if existing_data.get("storageProvider") == "r2":
+                try:
+                    r2_delete_object(str(existing_data.get("storageKey") or ""))
+                except Exception as error:
+                    safe_print(f"R2 delete failed for {existing_data.get('storageKey')}: {error}")
             conn.execute("DELETE FROM project_attachments WHERE project_id = %s AND id = %s", (project_id, existing_id))
 
     for index, item_id, item in normalized_items:
@@ -503,8 +579,17 @@ def fetch_project_items(conn, table_name: str, project_id: str, include_file_dat
         for row in rows:
             item = dict(row[0]) if isinstance(row[0], dict) else {}
             if include_file_data:
-                file_bytes = row[1]
                 mime_type = row[2] or item.get("type") or "application/octet-stream"
+                file_bytes = None
+                if item.get("storageProvider") == "r2" and item.get("storageKey"):
+                    try:
+                        file_bytes = r2_get_object(str(item.get("storageKey") or ""))
+                    except Exception as error:
+                        safe_print(f"R2 read failed for {item.get('storageKey')}: {error}")
+                        file_bytes = None
+                elif row[1]:
+                    file_bytes = bytes(row[1])
+
                 if file_bytes and not item.get("dataUrl"):
                     item["dataUrl"] = f"data:{mime_type};base64,{base64.b64encode(bytes(file_bytes)).decode('ascii')}"
             else:
@@ -625,6 +710,15 @@ def save_uploaded_attachment(project_id: str, attachment: dict, file_bytes: byte
     attachment["id"] = attachment_id
     metadata = slim_attachment(attachment)
     mime_type = str(metadata.get("type") or "application/octet-stream")
+    db_file_bytes = file_bytes
+
+    if r2_is_configured():
+        storage_key = r2_attachment_key(project_id, attachment_id, str(metadata.get("name") or "attachment"))
+        r2_put_object(storage_key, file_bytes, mime_type)
+        metadata["storageProvider"] = "r2"
+        metadata["storageKey"] = storage_key
+        metadata["storageBucket"] = R2_BUCKET_NAME
+        db_file_bytes = None
 
     if DATABASE_URL:
         def insert_attachment(conn):
@@ -648,7 +742,7 @@ def save_uploaded_attachment(project_id: str, attachment: dict, file_bytes: byte
                     file_data = EXCLUDED.file_data,
                     file_mime_type = EXCLUDED.file_mime_type
                 """,
-                (project_id, attachment_id, position, Jsonb(metadata), file_bytes, mime_type),
+                (project_id, attachment_id, position, Jsonb(metadata), db_file_bytes, mime_type),
             )
 
             project = dict(row[0])
@@ -680,10 +774,19 @@ def delete_project_attachment(project_id: str, attachment_id: str) -> bool:
     ensure_store()
     if DATABASE_URL:
         def delete_one(conn):
+            storage_row = conn.execute(
+                "SELECT data FROM project_attachments WHERE project_id = %s AND id = %s",
+                (project_id, attachment_id),
+            ).fetchone()
             cursor = conn.execute(
                 "DELETE FROM project_attachments WHERE project_id = %s AND id = %s",
                 (project_id, attachment_id),
             )
+            if storage_row and isinstance(storage_row[0], dict) and storage_row[0].get("storageProvider") == "r2":
+                try:
+                    r2_delete_object(str(storage_row[0].get("storageKey") or ""))
+                except Exception as error:
+                    safe_print(f"R2 delete failed for {storage_row[0].get('storageKey')}: {error}")
             row = conn.execute("SELECT data FROM projects WHERE id = %s", (project_id,)).fetchone()
             if row and isinstance(row[0], dict):
                 project = dict(row[0])
@@ -1745,6 +1848,9 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             saved = save_uploaded_attachment(project_id, attachment, file_bytes)
         except DatabaseUnavailable as error:
             self.send_error_json(503, str(error))
+            return
+        except Exception as error:
+            self.send_error_json(502, f"Attachment storage failed: {error}")
             return
 
         if not saved:
