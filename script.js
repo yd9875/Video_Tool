@@ -345,6 +345,11 @@ function isSceneRequest(userText) {
     "변경",
     "개선",
     "보완",
+    "완성",
+    "채워",
+    "채우",
+    "구체화",
+    "마무리",
     "반영",
     "적용",
     "업데이트",
@@ -1822,6 +1827,41 @@ async function generateAiReply(userText, context) {
   }
 }
 
+function stripSpeakerLabels(text) {
+  return normalizeBoardText(text).replace(/(^|\n)[가-힣A-Za-z][가-힣A-Za-z0-9 _-]{0,18}\s*[:：]\s*/g, "$1");
+}
+
+function summarizeDialogueForSubtitle(dialogue) {
+  const lines = stripSpeakerLabels(dialogue)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+  return lines.slice(0, 2).join("\n");
+}
+
+function completeScenesFromCurrentScript(project) {
+  const scenes = Array.isArray(project.scenes) ? project.scenes.map(ensureSceneShape) : [];
+  if (!scenes.length) return [];
+  return scenes.map((scene) => {
+    const dialogue = scene.dialogue || scene.copy || "";
+    const subtitle = scene.subtitle || summarizeDialogueForSubtitle(dialogue);
+    const visual =
+      scene.visual ||
+      "대사의 핵심 감정과 정보가 드러나도록 인물 표정, 손짓, 공간 분위기를 중심으로 구성한다.\n필요한 경우 관련 B-roll이나 자료 화면을 짧게 연결한다.";
+    const note =
+      scene.note ||
+      "대사 흐름을 해치지 않도록 컷 전환은 자연스럽게 가져간다.\n핵심 문장에서는 화면 자막과 시선 처리를 맞춰 메시지를 강조한다.";
+    return ensureSceneShape({
+      ...scene,
+      dialogue,
+      subtitle,
+      visual,
+      note,
+    });
+  });
+}
+
 async function generateReply(userText, context) {
   const shouldUpdateIdeaBoard = isSceneRequest(userText);
   try {
@@ -1832,8 +1872,13 @@ async function generateReply(userText, context) {
       if (shouldUpdateIdeaBoard && Array.isArray(aiResult.scenes) && aiResult.scenes.length > 0) {
         nextScenes = aiResult.scenes.map((scene) => ensureSceneShape(scene));
       } else if (shouldUpdateIdeaBoard) {
-        nextScenes = tuneScenesFromBrief(context.project, userText);
-        replyText = `${aiResult.text}\n\nAI 응답에서 장면 카드 구조를 읽지 못해, 현재 기준의 장면 초안을 아이디어 보드에 채웠어요.`;
+        nextScenes = completeScenesFromCurrentScript(context.project);
+        if (nextScenes.length) {
+          replyText = `${aiResult.text}\n\nAI 응답에서 장면 카드 구조를 읽지 못해, 기존 아이디어 보드의 대사를 보존한 상태로 빈칸을 보완했어요.`;
+        } else {
+          nextScenes = tuneScenesFromBrief(context.project, userText);
+          replyText = `${aiResult.text}\n\nAI 응답에서 장면 카드 구조를 읽지 못해, 현재 기준의 장면 초안을 아이디어 보드에 채웠어요.`;
+        }
       }
       await updateProjectData(context.projectId, (project) => {
         appendProjectMessage(project, "assistant", replyText);
