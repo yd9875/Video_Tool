@@ -127,11 +127,12 @@ def storyboard_response_format() -> dict:
         "additionalProperties": False,
         "properties": {
             "title": {"type": "string", "description": "장면 제목"},
+            "dialogue": {"type": "string", "description": "인물이 말하거나 내레이션으로 읽히는 대사"},
+            "subtitle": {"type": "string", "description": "화면에 표시되는 자막"},
             "visual": {"type": "string", "description": "화면과 구도 설명"},
-            "copy": {"type": "string", "description": "자막 또는 대사"},
             "note": {"type": "string", "description": "연출, 사운드, 전환 메모"},
         },
-        "required": ["title", "visual", "copy", "note"],
+        "required": ["title", "dialogue", "subtitle", "visual", "note"],
     }
     file_schema = {
         "type": "object",
@@ -924,8 +925,9 @@ def build_ai_prompt(user_message: str, project: dict) -> str:
             "\n".join(
                 [
                     f"{index}. {scene.get('title', '제목 없음')}",
+                    f"대사: {scene.get('dialogue') or scene.get('copy', '')}",
+                    f"자막: {scene.get('subtitle', '')}",
                     f"화면: {scene.get('visual', '')}",
-                    f"자막/대사: {scene.get('copy', '')}",
                     f"연출 메모: {scene.get('note', '')}",
                 ]
             )
@@ -946,8 +948,9 @@ def build_ai_prompt(user_message: str, project: dict) -> str:
   "scenes": [
     {{
       "title": "장면 제목",
+      "dialogue": "인물이 말하거나 내레이션으로 읽히는 대사",
+      "subtitle": "화면에 표시되는 자막",
       "visual": "화면 설명",
-      "copy": "자막 또는 대사",
       "note": "연출 메모"
     }}
   ],
@@ -983,9 +986,9 @@ PDF 파일을 요청받으면 type "pdf", encoding "utf8"로 두고 content에�
 사용자가 아이디어 보드 생성/작성/구성/만들기를 명시하면 scenes 배열에 전체 아이디어 보드 장면을 넣는다.
 사용자가 아이디어 보드 수정/개선/보완/반영/적용을 명시하면 개선된 전체 장면 배열을 반환한다.
 장면 배열을 반환할 때는 현재 아이디어 보드를 대체할 완성된 전체 장면 목록으로 반환한다.
-장면 수정 원칙: 현재 장면 카드의 "자막/대사(copy)"는 사용자가 직접 편집한 최신 의도일 수 있으므로 매우 중요한 기준점이다.
-사용자가 자막/대사에 맞게 화면이나 연출메모를 수정해달라고 하면, 해당 장면의 copy를 절대 무시하지 말고 copy가 말하는 정보, 감정, 논리, 톤을 화면(visual)과 연출메모(note)에 구체적으로 반영한다.
-사용자가 copy 수정을 명시하지 않았다면 기존 copy는 그대로 유지하고, visual과 note를 copy에 맞게 다시 쓴다.
+장면 수정 원칙: 현재 장면 카드의 "대사(dialogue)"와 "자막(subtitle)"은 사용자가 직접 편집한 최신 의도일 수 있으므로 매우 중요한 기준점이다.
+사용자가 대사나 자막에 맞게 화면이나 연출메모를 수정해달라고 하면, 해당 장면의 dialogue와 subtitle을 절대 무시하지 말고 그 정보, 감정, 논리, 톤을 화면(visual)과 연출메모(note)에 구체적으로 반영한다.
+사용자가 대사나 자막 수정을 명시하지 않았다면 기존 dialogue와 subtitle은 그대로 유지하고, visual과 note를 대사/자막에 맞게 다시 쓴다.
 특정 장면만 언급한 수정 요청이면 그 장면의 요청받은 필드를 중심으로 고치고, 요청받지 않은 장면은 수정 없이 보존한다. 그래도 scenes 배열은 전체 장면 목록으로 반환한다.
 assistant_message는 간결하게 작성한다.
 
@@ -1025,8 +1028,9 @@ def describe_project_for_ai(project: dict) -> str:
             "\n".join(
                 [
                     f"{index}. {scene.get('title', '제목 없음')}",
+                    f"대사: {scene.get('dialogue') or scene.get('copy', '')}",
+                    f"자막: {scene.get('subtitle', '')}",
                     f"화면: {scene.get('visual', '')}",
-                    f"자막/대사: {scene.get('copy', '')}",
                     f"연출 메모: {scene.get('note', '')}",
                 ]
             )
@@ -1175,8 +1179,9 @@ Project:
 
 Current scene {scene_index + 1}:
 - Title: {scene.get('title', '')}
+- Dialogue: {scene.get('dialogue') or scene.get('copy', '')}
+- Subtitle: {scene.get('subtitle', '')}
 - Visual: {scene.get('visual', '')}
-- Copy/dialogue context: {scene.get('copy', '')}
 - Direction note: {scene.get('note', '')}
 """
 
@@ -1209,8 +1214,9 @@ Project:
 
 Scene {scene_index + 1}:
 - Title: {scene.get('title', '')}
+- Dialogue: {scene.get('dialogue') or scene.get('copy', '')}
+- Subtitle: {scene.get('subtitle', '')}
 - Visual: {scene.get('visual', '')}
-- Copy/dialogue context: {scene.get('copy', '')}
 - Direction note: {scene.get('note', '')}
 """
 
@@ -1258,11 +1264,15 @@ def parse_ai_result(text: str) -> dict:
     for scene in scenes:
         if not isinstance(scene, dict):
             continue
+        dialogue = str(scene.get("dialogue") or scene.get("copy") or "")
+        subtitle = str(scene.get("subtitle") or "")
         normalized_scenes.append(
             {
                 "title": str(scene.get("title") or "새 장면"),
+                "dialogue": dialogue,
+                "subtitle": subtitle,
                 "visual": str(scene.get("visual") or ""),
-                "copy": str(scene.get("copy") or ""),
+                "copy": str(scene.get("copy") or dialogue),
                 "note": str(scene.get("note") or ""),
                 "image": "",
             }

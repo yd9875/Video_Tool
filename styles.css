@@ -602,7 +602,8 @@ h2 {
   font-size: 0.74rem;
 }
 
-.ai-task-ack {
+.ai-task-ack,
+.ai-task-cancel {
   min-width: 2.7rem;
   min-height: 1.45rem;
   padding: 0 0.45rem;
@@ -615,8 +616,18 @@ h2 {
   font-weight: 900;
 }
 
+.ai-task-cancel {
+  border-color: rgba(184, 77, 53, 0.28);
+  background: rgba(184, 77, 53, 0.08);
+  color: var(--primary-dark);
+}
+
 .ai-task-ack:hover {
   background: rgba(35, 122, 115, 0.16);
+}
+
+.ai-task-cancel:hover {
+  background: rgba(184, 77, 53, 0.14);
 }
 
 .ai-task-dot {
@@ -636,6 +647,10 @@ h2 {
 
 .ai-task.error .ai-task-dot {
   background: var(--primary);
+}
+
+.ai-task.canceled .ai-task-dot {
+  background: var(--muted);
 }
 
 @keyframes task-dot-pulse {
