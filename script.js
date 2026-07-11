@@ -33,10 +33,6 @@ const elements = {
   attachmentDrop: $(".attachment-drop"),
   attachmentList: $("#attachmentList"),
   generatedFileList: $("#generatedFileList"),
-  scriptPanel: $("#scriptPanel"),
-  scriptRequirements: $("#scriptRequirements"),
-  generateScript: $("#generateScript"),
-  scriptFileList: $("#scriptFileList"),
   draftScriptRequirements: $("#draftScriptRequirements"),
   generateDialogueDraft: $("#generateDialogueDraft"),
   modeLabel: $("#modeLabel"),
@@ -507,17 +503,12 @@ function onePageTaskId(projectId) {
   return projectId ? `onepage-${projectId}` : "";
 }
 
-function scriptTaskId(projectId) {
-  return projectId ? `script-${projectId}` : "";
-}
-
 function dialogueDraftTaskId(projectId) {
   return projectId ? `dialogue-draft-${projectId}` : "";
 }
 
 function syncProjectActionLocks() {
   elements.generateOnePage.disabled = isAiTaskRunning(onePageTaskId(state.currentProjectId));
-  elements.generateScript.disabled = isAiTaskRunning(scriptTaskId(state.currentProjectId));
   elements.generateDialogueDraft.disabled = isAiTaskRunning(dialogueDraftTaskId(state.currentProjectId));
 }
 
@@ -607,7 +598,6 @@ function syncContentTypeLock() {
 function updateLongformOptions() {
   const isLongform = getContentType() === "롱폼 (홍보영상, 인터뷰 등)";
   elements.longformOptions.hidden = !isLongform;
-  elements.scriptPanel.hidden = !isLongform;
   syncContentTypeLock();
 }
 
@@ -862,7 +852,6 @@ function hydrateProject(project) {
   renderMessages();
   renderAttachments();
   renderGeneratedFiles();
-  renderScriptFiles();
   renderScenes();
   renderProjectList();
   syncProjectActionLocks();
@@ -1592,6 +1581,7 @@ function normalizeScriptFile(file = {}) {
 }
 
 function renderScriptFiles() {
+  if (!elements.scriptFileList) return;
   if (!state.scriptFiles.length) {
     elements.scriptFileList.innerHTML = '<div class="empty-state">생성된 대본 파일이 없습니다.</div>';
     return;
@@ -1911,86 +1901,6 @@ async function generateOnePageFiles() {
     }
     updateApiStatus(`원페이지 오류: ${error.message}`);
     setSaveStatus("원페이지 생성 실패", "error");
-    finishAiTask(taskId, "실패", "error");
-  } finally {
-    syncProjectActionLocks();
-  }
-}
-
-async function generateScriptFile() {
-  const apiKey = elements.chatApiKeyInput.value.trim();
-  if (!apiKey) {
-    updateApiStatus("대본 생성에는 API 키가 필요합니다");
-    setSaveStatus("API 키 필요", "error");
-    return;
-  }
-
-  if (getContentType() !== "롱폼 (홍보영상, 인터뷰 등)") {
-    setSaveStatus("롱폼 작업 유형에서만 대본을 생성할 수 있습니다", "error");
-    return;
-  }
-
-  const requirements = elements.scriptRequirements.value.trim();
-  let context;
-  try {
-    context = await createProjectTaskContext();
-  } catch (error) {
-    console.error(error);
-    setSaveStatus(error.message, "error");
-    return;
-  }
-
-  const taskId = scriptTaskId(context.projectId);
-  if (isAiTaskRunning(taskId)) {
-    setSaveStatus("이 프로젝트의 대본이 이미 생성 중입니다", "pending");
-    return;
-  }
-
-  updateApiStatus("대본 생성 중");
-  setSaveStatus("대본 생성 중", "pending");
-  const signal = startAiTask(taskId, `${context.projectTitle} - 대본 생성`);
-  syncProjectActionLocks();
-
-  try {
-    await ensureAudioTranscriptionsForContext(context, signal);
-    if (isAiTaskCanceled(taskId)) return;
-    const result = await api("/api/ai/script", {
-      method: "POST",
-      signal,
-      body: JSON.stringify({
-        apiKey,
-        provider: elements.chatProviderInput.value || "openai",
-        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
-        requirements,
-        project: context.project,
-      }),
-    });
-    if (isAiTaskCanceled(taskId)) return;
-
-    const scriptFile = normalizeScriptFile({
-      name: result.name,
-      requirementsSummary: result.requirementsSummary,
-      content: result.content,
-      createdAt: result.createdAt,
-    });
-
-    await updateProjectData(context.projectId, (project) => {
-      project.scriptFiles = Array.isArray(project.scriptFiles) ? project.scriptFiles.map(normalizeScriptFile) : [];
-      project.scriptFiles = [scriptFile, ...project.scriptFiles].slice(0, 20);
-      return project;
-    });
-
-    updateApiStatus("대본 생성 완료");
-    setSaveStatus("대본 생성 완료", "saved");
-    finishAiTask(taskId, "완료", "done");
-  } catch (error) {
-    console.error(error);
-    if (isAbortError(error) || isAiTaskCanceled(taskId)) {
-      finishAiTask(taskId, "취소됨", "canceled");
-      return;
-    }
-    updateApiStatus(`대본 생성 오류: ${error.message}`);
-    setSaveStatus("대본 생성 실패", "error");
     finishAiTask(taskId, "실패", "error");
   } finally {
     syncProjectActionLocks();
@@ -2531,8 +2441,6 @@ elements.clearApiKey.addEventListener("click", clearApiSettings);
 
 elements.generateOnePage.addEventListener("click", generateOnePageFilesStable);
 
-elements.generateScript.addEventListener("click", generateScriptFile);
-
 elements.generateDialogueDraft.addEventListener("click", generateDialogueDraft);
 
 elements.exportDialogueScript.addEventListener("click", exportDialogueScriptFile);
@@ -2575,7 +2483,6 @@ elements.resetProject.addEventListener("click", () => {
   elements.briefTopicInput.value = defaultBrief;
   elements.briefFlowInput.value = "";
   elements.draftScriptRequirements.value = "";
-  elements.scriptRequirements.value = "";
   setContentType("범용 콘티");
   setLongformMode("Narration only");
   updateLongformOptions();
@@ -2583,7 +2490,6 @@ elements.resetProject.addEventListener("click", () => {
   renderMessages();
   renderAttachments();
   renderGeneratedFiles();
-  renderScriptFiles();
   renderScenes();
   scheduleSave();
 });

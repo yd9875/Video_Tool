@@ -485,7 +485,6 @@ input:disabled {
 .attachment-panel,
 .generated-file-panel,
 .draft-script-panel,
-.script-panel,
 .brief-panel,
 .chat-panel,
 .board-panel {
@@ -702,7 +701,6 @@ h2 {
 .format-panel,
 .attachment-panel,
 .generated-file-panel,
-.script-panel,
 .brief-panel {
   display: grid;
   grid-template-columns: 16rem minmax(0, 1fr);
@@ -785,22 +783,6 @@ h2 {
 .planning-row .choice-chip span {
   min-height: 2rem;
   padding: 0 0.68rem;
-}
-
-.script-workspace {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.script-panel > div:first-child {
-  align-content: start;
-  display: grid;
-  gap: 0.75rem;
-}
-
-.script-panel > div:first-child .button {
-  justify-self: start;
-  min-width: 7rem;
 }
 
 .attachment-controls {
@@ -996,7 +978,6 @@ h2 {
 
 .format-panel p,
 .attachment-panel p,
-.script-panel p,
 .brief-panel p,
 .panel-head p {
   margin-top: 0.25rem;
@@ -1331,7 +1312,6 @@ h2 {
   .format-panel,
   .attachment-panel,
   .generated-file-panel,
-  .script-panel,
   .brief-panel {
     grid-template-columns: 1fr;
   }
