@@ -944,37 +944,76 @@ function renderMessages() {
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 
+function normalizeBoardText(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function breakSentences(value) {
+  return normalizeBoardText(value)
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/([^0-9])([.!?。！？])\s+(?=\S)/g, "$1$2\n")
+        .replace(/(습니다|합니다|됩니다|입니다|이에요|예요|어요|아요|세요|네요|죠)\s+(?=[가-힣A-Za-z"“‘(])/g, "$1\n")
+    )
+    .join("\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatDialogueText(value) {
+  const withSpeakerBreaks = normalizeBoardText(value).replace(
+    /\s*([가-힣A-Za-z][가-힣A-Za-z0-9 _-]{0,18}\s*[:：])\s*/g,
+    "\n$1 "
+  );
+  return breakSentences(withSpeakerBreaks);
+}
+
+function formatSceneText(value, key) {
+  if (key === "title" || key === "image") return String(value || "").trim();
+  if (key === "dialogue" || key === "copy") return formatDialogueText(value);
+  return breakSentences(value);
+}
+
 function createScene(overrides = {}) {
-  const dialogue = overrides.dialogue || overrides.copy || "대사를 적어주세요.";
-  const subtitle = overrides.subtitle || "";
+  const dialogue = formatSceneText(overrides.dialogue || overrides.copy || "대사를 적어주세요.", "dialogue");
+  const subtitle = formatSceneText(overrides.subtitle || "", "subtitle");
   return {
-    title: overrides.title || "새 장면",
+    title: formatSceneText(overrides.title || "새 장면", "title"),
     dialogue,
     subtitle,
-    visual: overrides.visual || "화면 구도를 적어주세요.",
-    copy: overrides.copy || dialogue,
-    note: overrides.note || "카메라, 사운드, 전환 메모를 적어주세요.",
+    visual: formatSceneText(overrides.visual || "화면 구도를 적어주세요.", "visual"),
+    copy: dialogue,
+    note: formatSceneText(overrides.note || "카메라, 사운드, 전환 메모를 적어주세요.", "note"),
     image: overrides.image || "",
   };
 }
 
 function ensureSceneShape(scene) {
-  const dialogue = scene.dialogue || scene.copy || "";
-  const subtitle = scene.subtitle || "";
+  const dialogue = formatSceneText(scene.dialogue || scene.copy || "", "dialogue");
+  const subtitle = formatSceneText(scene.subtitle || "", "subtitle");
   return {
-    title: scene.title || "새 장면",
+    title: formatSceneText(scene.title || "새 장면", "title"),
     dialogue,
     subtitle,
-    visual: scene.visual || "",
-    copy: scene.copy || dialogue,
-    note: scene.note || "",
+    visual: formatSceneText(scene.visual || "", "visual"),
+    copy: dialogue,
+    note: formatSceneText(scene.note || "", "note"),
     image: scene.image || "",
   };
 }
 
 function setSceneDialogue(scene, value) {
-  scene.dialogue = value;
-  scene.copy = value;
+  const dialogue = formatSceneText(value, "dialogue");
+  scene.dialogue = dialogue;
+  scene.copy = dialogue;
 }
 
 function renderScenePreview(node, scene, index) {
@@ -1669,9 +1708,19 @@ function renderScenes() {
       [".scene-visual", "visual"],
       [".scene-note", "note"],
     ].forEach(([selector, key]) => {
-      $(selector, node).addEventListener("input", (event) => {
+      const input = $(selector, node);
+      input.addEventListener("input", (event) => {
         state.scenes[index][key] = event.target.value;
         if (key === "dialogue") state.scenes[index].copy = event.target.value;
+        updateSummary();
+        scheduleSave();
+      });
+      input.addEventListener("blur", (event) => {
+        const formatted = formatSceneText(event.target.value, key);
+        if (formatted === event.target.value) return;
+        event.target.value = formatted;
+        state.scenes[index][key] = formatted;
+        if (key === "dialogue") state.scenes[index].copy = formatted;
         updateSummary();
         scheduleSave();
       });
@@ -1918,6 +1967,8 @@ function buildDialogueDraftPrompt(requirements, project) {
 - 자막(subtitle), 화면(visual), 연출 메모(note)는 비워도 된다. 채워도 앱에서 비울 예정이므로 대사 구성에 집중해줘.
 - 장면 제목(title)은 대사 흐름을 구분할 수 있게 간단히 작성해줘.
 - 전체 흐름은 실제 영상 대본처럼 자연스럽게 이어지게 해줘.
+- dialogue는 한 줄에 길게 쓰지 말고 문장 단위로 줄을 나눠줘.
+- 화자가 바뀌면 반드시 줄을 바꿔줘. 예: "인터뷰어: ...\n인터뷰이: ...\n내레이션: ..."
 
 [작성 요구사항]
 ${requirements || "별도 요구사항 없음"}
