@@ -212,7 +212,16 @@
               <h2 id="brief-title">브리프</h2>
               <p>제품, 타깃, 메시지를 적으면 현재 프로젝트에 자동 저장됩니다.</p>
             </div>
-            <textarea id="briefInput" aria-label="콘티 브리프" spellcheck="false"></textarea>
+            <div class="brief-fields">
+              <label>
+                <span>주제</span>
+                <textarea id="briefTopicInput" aria-label="브리프 주제" spellcheck="false"></textarea>
+              </label>
+              <label>
+                <span>흐름</span>
+                <textarea id="briefFlowInput" aria-label="브리프 흐름" spellcheck="false"></textarea>
+              </label>
+            </div>
           </section>
         </div>
 
@@ -244,6 +253,17 @@
 
         <div class="work-grid">
           <div class="chat-stack">
+            <section class="draft-script-panel" aria-labelledby="draft-script-title">
+              <div>
+                <h2 id="draft-script-title">대본 초안 생성</h2>
+                <p>요구사항과 현재 기획 자료를 바탕으로 대사만 채운 아이디어 보드를 만듭니다.</p>
+              </div>
+              <div class="draft-script-workspace">
+                <textarea id="draftScriptRequirements" rows="4" aria-label="대본 초안 생성 요구사항" placeholder="톤, 화자, 분량, 인터뷰 반영 방식 등 요구사항을 적어주세요."></textarea>
+                <button class="button primary" id="generateDialogueDraft" type="button">생성</button>
+              </div>
+            </section>
+
             <section class="chat-panel" aria-labelledby="chat-title">
               <div class="panel-head">
                 <div>
@@ -298,13 +318,23 @@
                 <h2 id="board-title">아이디어 보드</h2>
                 <p><span id="sceneCount">0</span>개 장면</p>
               </div>
-              <button class="button secondary" id="addScene" type="button">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5v14"></path>
-                  <path d="M5 12h14"></path>
-                </svg>
-                장면 추가
-              </button>
+              <div class="panel-actions">
+                <button class="button secondary" id="exportDialogueScript" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <path d="M7 10l5 5 5-5"></path>
+                    <path d="M12 15V3"></path>
+                  </svg>
+                  대본 내보내기
+                </button>
+                <button class="button secondary" id="addScene" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                  </svg>
+                  장면 추가
+                </button>
+              </div>
             </div>
 
             <div class="story-summary" id="storySummary"></div>

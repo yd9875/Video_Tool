@@ -24,7 +24,8 @@ const elements = {
   platform: $("#platform"),
   durationMinutes: $("#durationMinutes"),
   durationSeconds: $("#durationSeconds"),
-  briefInput: $("#briefInput"),
+  briefTopicInput: $("#briefTopicInput"),
+  briefFlowInput: $("#briefFlowInput"),
   contentTypeInputs: $$('input[name="contentType"]'),
   longformOptions: $("#longformOptions"),
   longformModeInputs: $$('input[name="longformMode"]'),
@@ -36,6 +37,8 @@ const elements = {
   scriptRequirements: $("#scriptRequirements"),
   generateScript: $("#generateScript"),
   scriptFileList: $("#scriptFileList"),
+  draftScriptRequirements: $("#draftScriptRequirements"),
+  generateDialogueDraft: $("#generateDialogueDraft"),
   modeLabel: $("#modeLabel"),
   messages: $("#messages"),
   chatForm: $("#chatForm"),
@@ -46,6 +49,7 @@ const elements = {
   sceneCount: $("#sceneCount"),
   storySummary: $("#storySummary"),
   addScene: $("#addScene"),
+  exportDialogueScript: $("#exportDialogueScript"),
   saveProject: $("#saveProject"),
   copyStoryboard: $("#copyStoryboard"),
   exportStoryboard: $("#exportStoryboard"),
@@ -507,9 +511,14 @@ function scriptTaskId(projectId) {
   return projectId ? `script-${projectId}` : "";
 }
 
+function dialogueDraftTaskId(projectId) {
+  return projectId ? `dialogue-draft-${projectId}` : "";
+}
+
 function syncProjectActionLocks() {
   elements.generateOnePage.disabled = isAiTaskRunning(onePageTaskId(state.currentProjectId));
   elements.generateScript.disabled = isAiTaskRunning(scriptTaskId(state.currentProjectId));
+  elements.generateDialogueDraft.disabled = isAiTaskRunning(dialogueDraftTaskId(state.currentProjectId));
 }
 
 function attachmentForSave(file = {}) {
@@ -519,14 +528,24 @@ function attachmentForSave(file = {}) {
   };
 }
 
+function buildBriefText(topic = elements.briefTopicInput.value, flow = elements.briefFlowInput.value) {
+  const cleanTopic = String(topic || "").trim();
+  const cleanFlow = String(flow || "").trim();
+  return [`주제: ${cleanTopic}`, `흐름: ${cleanFlow}`].filter((line) => line.replace(/^(주제|흐름):\s*/, "").trim()).join("\n");
+}
+
 function projectPayload() {
+  const briefTopic = elements.briefTopicInput.value.trim();
+  const briefFlow = elements.briefFlowInput.value.trim();
   return {
     title: elements.projectTitle.value.trim() || "제목 없는 콘티",
     platform: elements.platform.value,
     duration: getDuration(),
     contentType: getContentType(),
     longformMode: getLongformMode(),
-    brief: elements.briefInput.value.trim(),
+    briefTopic,
+    briefFlow,
+    brief: buildBriefText(briefTopic, briefFlow),
     messages: state.messages,
     scenes: state.scenes.map(ensureSceneShape),
     attachments: state.attachments.map(attachmentForSave),
@@ -537,13 +556,17 @@ function projectPayload() {
 }
 
 function getBrief() {
+  const briefTopic = elements.briefTopicInput.value.trim();
+  const briefFlow = elements.briefFlowInput.value.trim();
   return {
     title: elements.projectTitle.value.trim() || "제목 없는 콘티",
     platform: elements.platform.value,
     duration: getDuration(),
     contentType: getContentType(),
     longformMode: getLongformMode(),
-    brief: elements.briefInput.value.trim(),
+    briefTopic,
+    briefFlow,
+    brief: buildBriefText(briefTopic, briefFlow),
   };
 }
 
@@ -801,6 +824,8 @@ function blankProject() {
     platform: "Instagram Reels",
     duration: "15초",
     brief: "",
+    briefTopic: "",
+    briefFlow: "",
     contentType: "범용 콘티",
     longformMode: "Narration only",
     messages: [],
@@ -829,7 +854,8 @@ function hydrateProject(project) {
   setLongformMode(project.longformMode || "Narration only");
   updateLongformOptions();
   syncContentTypeLock();
-  elements.briefInput.value = project.brief ?? defaultBrief;
+  elements.briefTopicInput.value = project.briefTopic ?? project.brief ?? defaultBrief;
+  elements.briefFlowInput.value = project.briefFlow ?? "";
 
   elements.modeLabel.textContent = "작업 유형, 브리프, 첨부 파일, 장면을 함께 분석";
 
@@ -895,6 +921,8 @@ async function boot() {
       platform: "Instagram Reels",
       duration: "15초",
       brief: defaultBrief,
+      briefTopic: defaultBrief,
+      briefFlow: "",
       contentType: "범용 콘티",
       longformMode: "Narration only",
       messages: [],
@@ -1969,6 +1997,177 @@ async function generateScriptFile() {
   }
 }
 
+function buildDialogueDraftPrompt(requirements, project) {
+  const formatLabel = project.longformMode ? `${project.contentType} / ${project.longformMode}` : project.contentType;
+  return `아이디어보드 생성.
+
+아래 현재 기획, 작업 유형, 브리프, 첨부파일 내용을 반영해서 대본 초안용 아이디어 보드를 만들어줘.
+가장 중요한 조건:
+- scenes 배열을 반드시 채워줘.
+- 각 장면은 대사(dialogue)만 작성하는 목적이야.
+- 자막(subtitle), 화면(visual), 연출 메모(note)는 비워도 된다. 채워도 앱에서 비울 예정이므로 대사 구성에 집중해줘.
+- 장면 제목(title)은 대사 흐름을 구분할 수 있게 간단히 작성해줘.
+- 전체 흐름은 실제 영상 대본처럼 자연스럽게 이어지게 해줘.
+
+[작성 요구사항]
+${requirements || "별도 요구사항 없음"}
+
+[현재 기획]
+제목: ${project.title || ""}
+매체: ${project.platform || ""}
+길이: ${project.duration || ""}
+작업 유형: ${formatLabel}
+
+[브리프]
+${project.brief || ""}
+
+[첨부파일]
+${(project.attachments || [])
+  .map((file, index) => `${index + 1}. ${file.name || "첨부파일"} (${file.kind || "file"})${file.text ? `\n${file.text}` : ""}`)
+  .join("\n\n") || "첨부파일 없음"}`;
+}
+
+function dialogueOnlyScenes(scenes = []) {
+  return scenes.map((scene, index) => {
+    const normalized = ensureSceneShape(scene);
+    const dialogue = normalized.dialogue || normalized.copy || "";
+    return {
+      title: normalized.title || `${index + 1}번 장면`,
+      dialogue,
+      subtitle: "",
+      visual: "",
+      copy: dialogue,
+      note: "",
+      image: "",
+    };
+  });
+}
+
+async function generateDialogueDraft() {
+  const apiKey = elements.chatApiKeyInput.value.trim();
+  if (!apiKey) {
+    updateApiStatus("대본 초안 생성에는 API 키가 필요합니다");
+    setSaveStatus("API 키 필요", "error");
+    return;
+  }
+
+  const requirements = elements.draftScriptRequirements.value.trim();
+  let context;
+  try {
+    context = await createProjectTaskContext();
+  } catch (error) {
+    console.error(error);
+    setSaveStatus(error.message, "error");
+    return;
+  }
+
+  const taskId = dialogueDraftTaskId(context.projectId);
+  if (isAiTaskRunning(taskId)) {
+    setSaveStatus("이 프로젝트의 대본 초안이 이미 생성 중입니다", "pending");
+    return;
+  }
+
+  updateApiStatus("대본 초안 생성 중");
+  setSaveStatus("대본 초안 생성 중", "pending");
+  const signal = startAiTask(taskId, `${context.projectTitle} - 대본 초안 생성`);
+  syncProjectActionLocks();
+
+  try {
+    await ensureAudioTranscriptionsForContext(context, signal);
+    if (isAiTaskCanceled(taskId)) return;
+    const prompt = buildDialogueDraftPrompt(requirements, context.project);
+    const result = await api("/api/ai/chat", {
+      method: "POST",
+      signal,
+      body: JSON.stringify({
+        apiKey,
+        provider: elements.chatProviderInput.value || "openai",
+        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        message: prompt,
+        project: context.project,
+        imageSettings: {
+          apiKey: elements.imageApiKeyInput.value.trim() || apiKey,
+          provider: elements.imageProviderInput.value || "openai",
+          model: elements.imageModelInput.value.trim() || "gpt-image-1",
+          aspect: getSketchAspectForProject(context.project),
+        },
+      }),
+    });
+    if (isAiTaskCanceled(taskId)) return;
+
+    const scenes = dialogueOnlyScenes(result.scenes || []).filter((scene) => scene.dialogue.trim());
+    if (!scenes.length) {
+      throw new Error("AI 응답에서 대사 장면을 찾지 못했습니다");
+    }
+
+    await updateProjectData(context.projectId, (project) => {
+      project.scenes = scenes;
+      appendProjectMessage(project, "assistant", result.text || "대사만 작성된 아이디어 보드를 생성했습니다.");
+      return project;
+    });
+
+    updateApiStatus("대본 초안 생성 완료");
+    setSaveStatus("대본 초안 생성 완료", "saved");
+    finishAiTask(taskId, "완료", "done");
+  } catch (error) {
+    console.error(error);
+    if (isAbortError(error) || isAiTaskCanceled(taskId)) {
+      finishAiTask(taskId, "취소됨", "canceled");
+      return;
+    }
+    updateApiStatus(`대본 초안 생성 오류: ${error.message}`);
+    setSaveStatus("대본 초안 생성 실패", "error");
+    finishAiTask(taskId, "실패", "error");
+  } finally {
+    syncProjectActionLocks();
+  }
+}
+
+function buildDialogueScriptText(project = projectPayload()) {
+  const formatLabel = project.longformMode ? `${project.contentType} / ${project.longformMode}` : project.contentType;
+  const dialogueLines = (project.scenes || [])
+    .map((scene, index) => {
+      const normalized = ensureSceneShape(scene);
+      return `${index + 1}. ${normalized.title}\n${normalized.dialogue || ""}`;
+    })
+    .join("\n\n");
+
+  return `# ${project.title || "제목 없는 콘티"} - 대본
+
+프로젝트: ${project.title || ""}
+매체: ${project.platform || ""}
+길이: ${project.duration || ""}
+작업 유형: ${formatLabel}
+
+## 브리프
+${project.brief || ""}
+
+## 대사
+${dialogueLines || "작성된 대사가 없습니다."}
+`;
+}
+
+async function exportDialogueScriptFile() {
+  const project = projectPayload();
+  const safeTitle = safeFilename(project.title || "storyboard") || "storyboard";
+  const file = normalizeGeneratedFile({
+    name: `${safeTitle} - 대본.txt`,
+    type: "txt",
+    mimeType: "text/plain",
+    encoding: "utf8",
+    content: buildDialogueScriptText(project),
+    createdAt: new Date().toISOString(),
+  });
+  state.generatedFiles = [file, ...state.generatedFiles.map(normalizeGeneratedFile)].slice(0, 20);
+  renderGeneratedFiles();
+  setSaveStatus("대본 파일 생성됨", "saved");
+  try {
+    await saveCurrentProject();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 function tuneScenesFromBrief(brief, userText) {
   const scenes = sampleScenes.map((scene) => ({ ...scene }));
   const cleanBrief = brief.brief || "제품의 장점을 감각적으로 보여주는 광고";
@@ -2334,6 +2533,10 @@ elements.generateOnePage.addEventListener("click", generateOnePageFilesStable);
 
 elements.generateScript.addEventListener("click", generateScriptFile);
 
+elements.generateDialogueDraft.addEventListener("click", generateDialogueDraft);
+
+elements.exportDialogueScript.addEventListener("click", exportDialogueScriptFile);
+
 elements.chatProviderInput.addEventListener("change", () => {
   const options = chatModelOptions[elements.chatProviderInput.value] || chatModelOptions.openai;
   renderChatModelOptions(elements.chatProviderInput.value, options[0][0]);
@@ -2369,7 +2572,9 @@ elements.resetProject.addEventListener("click", () => {
   state.scriptFiles = [];
   state.contentTypeLocked = false;
   elements.projectTitle.value = "";
-  elements.briefInput.value = defaultBrief;
+  elements.briefTopicInput.value = defaultBrief;
+  elements.briefFlowInput.value = "";
+  elements.draftScriptRequirements.value = "";
   elements.scriptRequirements.value = "";
   setContentType("범용 콘티");
   setLongformMode("Narration only");
@@ -2383,7 +2588,7 @@ elements.resetProject.addEventListener("click", () => {
   scheduleSave();
 });
 
-[elements.projectTitle, elements.platform, elements.durationMinutes, elements.durationSeconds, elements.briefInput].forEach((element) => {
+[elements.projectTitle, elements.platform, elements.durationMinutes, elements.durationSeconds, elements.briefTopicInput, elements.briefFlowInput].forEach((element) => {
   element.addEventListener("input", () => {
     updateSummary();
     scheduleSave();

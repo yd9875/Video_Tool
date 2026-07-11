@@ -840,6 +840,8 @@ def normalize_project(payload: dict, existing: dict | None = None) -> dict:
             "duration": str(payload.get("duration") or "15초"),
             "contentType": str(payload.get("contentType") or "범용 콘티"),
             "longformMode": str(payload.get("longformMode") or ""),
+            "briefTopic": str(payload.get("briefTopic") or ""),
+            "briefFlow": str(payload.get("briefFlow") or ""),
             "brief": str(payload.get("brief") or ""),
             "messages": payload.get("messages") if isinstance(payload.get("messages"), list) else [],
             "scenes": payload.get("scenes") if isinstance(payload.get("scenes"), list) else [],
