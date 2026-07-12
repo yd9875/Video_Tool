@@ -1,5 +1,6 @@
 const state = {
   currentProjectId: null,
+  projectPlatform: "미지정",
   projects: [],
   messages: [],
   scenes: [],
@@ -21,7 +22,6 @@ const elements = {
   newProject: $("#newProject"),
   projectTitle: $("#projectTitle"),
   releaseBadge: $("#releaseBadge"),
-  platform: $("#platform"),
   durationMinutes: $("#durationMinutes"),
   durationSeconds: $("#durationSeconds"),
   briefTopicInput: $("#briefTopicInput"),
@@ -65,15 +65,8 @@ const elements = {
 };
 
 const defaultBrief = "";
+const defaultPlatform = "미지정";
 const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8020" : "";
-const platformOptions = [
-  "Instagram Reels",
-  "Instagram Feed",
-  "TikTok",
-  "YouTube Shorts",
-  "YouTube In-stream",
-  "YouTube Long Form",
-];
 const chatApiKeyStorageKey = "conti_ai_openai_api_key";
 const chatProviderStorageKey = "conti_ai_chat_provider";
 const chatModelStorageKey = "conti_ai_openai_model";
@@ -535,7 +528,7 @@ function projectPayload() {
   const briefFlow = elements.briefFlowInput.value.trim();
   return {
     title: elements.projectTitle.value.trim() || "제목 없는 콘티",
-    platform: elements.platform.value,
+    platform: state.projectPlatform || defaultPlatform,
     duration: getDuration(),
     contentType: getContentType(),
     longformMode: getLongformMode(),
@@ -556,7 +549,7 @@ function getBrief() {
   const briefFlow = elements.briefFlowInput.value.trim();
   return {
     title: elements.projectTitle.value.trim() || "제목 없는 콘티",
-    platform: elements.platform.value,
+    platform: state.projectPlatform || defaultPlatform,
     duration: getDuration(),
     contentType: getContentType(),
     longformMode: getLongformMode(),
@@ -740,7 +733,7 @@ function upsertProjectSummary(project) {
   const summary = {
     id: project.id,
     title: project.title,
-    platform: project.platform,
+    platform: project.platform || defaultPlatform,
     duration: project.duration,
     updatedAt: project.updatedAt,
   };
@@ -764,7 +757,13 @@ function renderProjectList() {
         <div class="project-item ${isActive ? "active" : ""}" data-project-id="${project.id}">
           <button class="project-open" type="button" data-project-id="${project.id}">
             <strong>${escapeHtml(project.title)}</strong>
-            <span>${escapeHtml(project.platform)} · ${escapeHtml(project.duration)} · ${updated}</span>
+            <span>${escapeHtml(project.duration)} · ${updated}</span>
+          </button>
+          <button class="project-copy" type="button" data-project-id="${project.id}" aria-label="${escapeHtml(project.title)} 복사">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+              <rect x="2" y="2" width="13" height="13" rx="2"></rect>
+            </svg>
           </button>
           <button class="project-delete" type="button" data-project-id="${project.id}" aria-label="${escapeHtml(project.title)} 삭제">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -780,6 +779,10 @@ function renderProjectList() {
 
   $$(".project-open", elements.projectList).forEach((button) => {
     button.addEventListener("click", () => loadProject(button.dataset.projectId));
+  });
+
+  $$(".project-copy", elements.projectList).forEach((button) => {
+    button.addEventListener("click", () => copyProject(button.dataset.projectId));
   });
 
   $$(".project-delete", elements.projectList).forEach((button) => {
@@ -816,7 +819,7 @@ function blankProject() {
   return {
     id: null,
     title: "",
-    platform: "Instagram Reels",
+    platform: defaultPlatform,
     duration: "15초",
     brief: "",
     briefTopic: "",
@@ -835,6 +838,7 @@ function blankProject() {
 function hydrateProject(project) {
   state.isHydrating = true;
   state.currentProjectId = project.id;
+  state.projectPlatform = project.platform || defaultPlatform;
   state.messages = Array.isArray(project.messages) ? project.messages : [];
   state.scenes = Array.isArray(project.scenes) ? project.scenes : [];
   state.attachments = Array.isArray(project.attachments) ? project.attachments : [];
@@ -843,7 +847,6 @@ function hydrateProject(project) {
   state.contentTypeLocked = Boolean(project.contentTypeLocked);
 
   elements.projectTitle.value = project.title ?? "";
-  elements.platform.value = platformOptions.includes(project.platform) ? project.platform : "Instagram Reels";
   setDuration(project.duration || "15초");
   setContentType(project.contentType || "범용 콘티");
   setLongformMode(project.longformMode || "Narration only");
@@ -872,6 +875,31 @@ async function loadProject(id) {
   } catch (error) {
     console.error(error);
     setSaveStatus("불러오기 실패", "error");
+  }
+}
+
+async function copyProject(id) {
+  try {
+    setSaveStatus("프로젝트 복사 중", "pending");
+    const source = await api(`/api/projects/${id}`);
+    const sourceTitle = projectTitleLabel(source);
+    const copyPayload = {
+      ...source,
+      id: undefined,
+      title: `${sourceTitle}(복사본)`,
+      updatedAt: undefined,
+      createdAt: undefined,
+    };
+    const saved = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(copyPayload),
+    });
+    upsertProjectSummary(saved);
+    hydrateProject(saved);
+    setSaveStatus("프로젝트 복사됨", "saved");
+  } catch (error) {
+    console.error(error);
+    setSaveStatus(`복사 실패: ${error.message}`, "error");
   }
 }
 
@@ -912,7 +940,7 @@ async function boot() {
     hydrateProject({
       id: null,
       title: "",
-      platform: "Instagram Reels",
+      platform: defaultPlatform,
       duration: "15초",
       brief: defaultBrief,
       briefTopic: defaultBrief,
@@ -1762,7 +1790,7 @@ function moveScene(index, direction) {
 }
 
 function updateSummary() {
-  const { title, platform, duration, contentType, longformMode } = getBrief();
+  const { title, duration, contentType, longformMode } = getBrief();
   const formatLabel = longformMode ? `${contentType} · ${longformMode}` : contentType;
   elements.storySummary.innerHTML = `
     <div>
@@ -1770,8 +1798,8 @@ function updateSummary() {
       <strong>${escapeHtml(title)}</strong>
     </div>
     <div>
-      <span>매체</span>
-      <strong>${escapeHtml(platform)} · ${escapeHtml(duration)}</strong>
+      <span>길이</span>
+      <strong>${escapeHtml(duration)}</strong>
     </div>
     <div>
       <span>작업 유형</span>
@@ -2005,7 +2033,7 @@ function buildDialogueDraftPrompt(requirements, project) {
   const formatLabel = project.longformMode ? `${project.contentType} / ${project.longformMode}` : project.contentType;
   return `아이디어보드 생성.
 
-아래 현재 기획, 작업 유형, 브리프, 첨부파일 내용을 반영해서 대본 초안용 아이디어 보드를 만들어줘.
+아래 브리프, 작업 유형, 첨부파일 내용을 반영해서 대본 초안용 아이디어 보드를 만들어줘.
 가장 중요한 조건:
 - scenes 배열을 반드시 채워줘.
 - 각 장면은 대사(dialogue)만 작성하는 목적이야.
@@ -2018,7 +2046,7 @@ function buildDialogueDraftPrompt(requirements, project) {
 [작성 요구사항]
 ${requirements || "별도 요구사항 없음"}
 
-[현재 기획]
+[브리프 정보]
 제목: ${project.title || ""}
 매체: ${project.platform || ""}
 길이: ${project.duration || ""}
@@ -2590,7 +2618,7 @@ elements.resetProject.addEventListener("click", () => {
   scheduleSave();
 });
 
-[elements.projectTitle, elements.platform, elements.durationMinutes, elements.durationSeconds, elements.briefTopicInput, elements.briefFlowInput].forEach((element) => {
+[elements.projectTitle, elements.durationMinutes, elements.durationSeconds, elements.briefTopicInput, elements.briefFlowInput].forEach((element) => {
   element.addEventListener("input", () => {
     updateSummary();
     scheduleSave();
