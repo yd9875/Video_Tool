@@ -1275,15 +1275,31 @@ const audioExtensionMimeTypes = {
   webm: "audio/webm",
 };
 
+const audioMimeTypeAliases = {
+  "audio/m4a": "audio/mp4",
+  "audio/mp3": "audio/mpeg",
+  "audio/wave": "audio/wav",
+  "audio/x-flac": "audio/flac",
+  "audio/x-m4a": "audio/mp4",
+  "audio/x-mp3": "audio/mpeg",
+  "audio/x-mpeg": "audio/mpeg",
+  "audio/x-wav": "audio/wav",
+};
+
 function attachmentExtension(name = "") {
   const match = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
   return match ? match[1] : "";
 }
 
 function guessAttachmentMimeType(file) {
-  const explicitType = String(file?.type || "").trim();
-  if (explicitType && explicitType !== "application/octet-stream") return explicitType;
-  return audioExtensionMimeTypes[attachmentExtension(file?.name)] || explicitType || "application/octet-stream";
+  const explicitType = String(file?.type || "").trim().toLowerCase();
+  const extensionMimeType = audioExtensionMimeTypes[attachmentExtension(file?.name)];
+  if (extensionMimeType && (!explicitType || explicitType === "application/octet-stream" || explicitType.startsWith("audio/") || explicitType === "video/mp4")) {
+    return extensionMimeType;
+  }
+  if (audioMimeTypeAliases[explicitType]) return audioMimeTypeAliases[explicitType];
+  if (explicitType) return explicitType;
+  return extensionMimeType || "application/octet-stream";
 }
 
 function getAttachmentKind(file) {

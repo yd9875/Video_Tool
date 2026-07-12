@@ -449,18 +449,85 @@ AUDIO_EXTENSION_MIME_TYPES = {
     ".webm": "audio/webm",
 }
 
+AUDIO_MIME_TYPE_ALIASES = {
+    "audio/m4a": "audio/mp4",
+    "audio/mp3": "audio/mpeg",
+    "audio/wave": "audio/wav",
+    "audio/x-flac": "audio/flac",
+    "audio/x-m4a": "audio/mp4",
+    "audio/x-mp3": "audio/mpeg",
+    "audio/x-mpeg": "audio/mpeg",
+    "audio/x-wav": "audio/wav",
+}
+
+SUPPORTED_TRANSCRIPTION_EXTENSIONS = {
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+    ".oga",
+    ".ogg",
+    ".wav",
+    ".webm",
+}
+
 
 def audio_mime_type_from_filename(filename: str) -> str:
     return AUDIO_EXTENSION_MIME_TYPES.get(os.path.splitext(str(filename or ""))[1].lower(), "")
 
 
 def normalize_attachment_mime_type(filename: str, mime_type: str) -> str:
-    clean_type = str(mime_type or "").strip()
+    clean_type = str(mime_type or "").split(";", 1)[0].strip().lower()
     guessed_audio_type = audio_mime_type_from_filename(filename)
     guessed_type = mimetypes.guess_type(str(filename or ""))[0] or ""
+    if clean_type in AUDIO_MIME_TYPE_ALIASES:
+        return AUDIO_MIME_TYPE_ALIASES[clean_type]
+    if guessed_audio_type and (
+        not clean_type
+        or clean_type in {"application/octet-stream", "binary/octet-stream"}
+        or clean_type.startswith("audio/")
+        or clean_type == "video/mp4"
+    ):
+        return guessed_audio_type
     if not clean_type or clean_type in {"application/octet-stream", "binary/octet-stream"}:
         return guessed_audio_type or guessed_type or "application/octet-stream"
     return clean_type
+
+
+def sniff_audio_mime_type(file_bytes: bytes) -> tuple[str, str] | None:
+    sample = bytes(file_bytes[:64])
+    if sample.startswith(b"ID3") or (len(sample) >= 2 and sample[0] == 0xFF and sample[1] & 0xE0 == 0xE0):
+        return "audio/mpeg", ".mp3"
+    if len(sample) >= 12 and sample[4:8] == b"ftyp":
+        return "audio/mp4", ".m4a"
+    if sample.startswith(b"RIFF") and sample[8:12] == b"WAVE":
+        return "audio/wav", ".wav"
+    if sample.startswith(b"fLaC"):
+        return "audio/flac", ".flac"
+    if sample.startswith(b"OggS"):
+        return "audio/ogg", ".ogg"
+    if sample.startswith(b"\x1A\x45\xDF\xA3"):
+        return "audio/webm", ".webm"
+    return None
+
+
+def safe_transcription_filename(filename: str, mime_type: str, file_bytes: bytes) -> str:
+    suffix = os.path.splitext(str(filename or ""))[1].lower()
+    sniffed = sniff_audio_mime_type(file_bytes)
+    if sniffed:
+        suffix = sniffed[1]
+    if suffix not in SUPPORTED_TRANSCRIPTION_EXTENSIONS:
+        suffix = {
+            "audio/flac": ".flac",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/wav": ".wav",
+            "audio/webm": ".webm",
+        }.get(mime_type, ".mp3")
+    return f"audio-upload{suffix}"
 
 
 def slim_attachment(item: dict) -> dict:
@@ -2545,11 +2612,18 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             self.send_error_json(400, "Invalid audio file data")
             return
         mime_type = normalize_attachment_mime_type(filename, mime_type)
+        if not file_bytes:
+            self.send_error_json(400, "Audio file data is empty")
+            return
+        sniffed_audio = sniff_audio_mime_type(file_bytes)
+        if sniffed_audio:
+            mime_type = sniffed_audio[0]
+        upload_filename = safe_transcription_filename(filename, mime_type, file_bytes)
 
         body, content_type = multipart_form_data(
             fields={"model": "gpt-4o-mini-transcribe", "response_format": "json"},
             file_field="file",
-            filename=filename,
+            filename=upload_filename,
             mime_type=mime_type,
             file_bytes=file_bytes,
         )
