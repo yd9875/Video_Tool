@@ -434,6 +434,35 @@ def project_item_id(item: dict) -> str:
     return item_id or uuid.uuid4().hex
 
 
+AUDIO_EXTENSION_MIME_TYPES = {
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".mp4": "audio/mp4",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".oga": "audio/ogg",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+}
+
+
+def audio_mime_type_from_filename(filename: str) -> str:
+    return AUDIO_EXTENSION_MIME_TYPES.get(os.path.splitext(str(filename or ""))[1].lower(), "")
+
+
+def normalize_attachment_mime_type(filename: str, mime_type: str) -> str:
+    clean_type = str(mime_type or "").strip()
+    guessed_audio_type = audio_mime_type_from_filename(filename)
+    guessed_type = mimetypes.guess_type(str(filename or ""))[0] or ""
+    if not clean_type or clean_type in {"application/octet-stream", "binary/octet-stream"}:
+        return guessed_audio_type or guessed_type or "application/octet-stream"
+    return clean_type
+
+
 def slim_attachment(item: dict) -> dict:
     slim = dict(item)
     if slim.get("dataUrl"):
@@ -466,7 +495,7 @@ def project_for_db(project: dict) -> tuple[dict, list[dict], list[dict]]:
 
     for item in attachments:
         if isinstance(item, dict):
-            next_item = dict(item)
+            next_item = normalize_attachment_metadata(item)
             next_item["id"] = project_item_id(next_item)
             normalized_attachments.append(next_item)
 
@@ -520,7 +549,7 @@ def sync_project_attachments(conn, project_id: str, items: list[dict]) -> None:
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             continue
-        next_item = dict(item)
+        next_item = normalize_attachment_metadata(item)
         item_id = project_item_id(next_item)
         next_item["id"] = item_id
         incoming_ids.add(item_id)
@@ -545,6 +574,10 @@ def sync_project_attachments(conn, project_id: str, items: list[dict]) -> None:
 
         if decoded is not None:
             mime_type, file_bytes = decoded
+            mime_type = normalize_attachment_mime_type(str(item.get("name") or ""), mime_type)
+            slim["type"] = mime_type
+            if attachment_kind(str(item.get("name") or ""), mime_type) == "audio":
+                slim["kind"] = "audio"
             conn.execute(
                 """
                 INSERT INTO project_attachments (project_id, id, position, data, file_data, file_mime_type)
@@ -586,8 +619,13 @@ def fetch_project_items(conn, table_name: str, project_id: str, include_file_dat
         items = []
         for row in rows:
             item = dict(row[0]) if isinstance(row[0], dict) else {}
+            item_name = str(item.get("name") or "")
+            item_type = normalize_attachment_mime_type(item_name, str(row[2] or item.get("type") or "application/octet-stream"))
+            item["type"] = item_type
+            if attachment_kind(item_name, item_type) == "audio":
+                item["kind"] = "audio"
             if include_file_data:
-                mime_type = row[2] or item.get("type") or "application/octet-stream"
+                mime_type = item_type
                 file_bytes = None
                 if item.get("storageProvider") == "r2" and item.get("storageKey"):
                     try:
@@ -695,15 +733,27 @@ def project_from_payload(payload: dict) -> dict:
 
 
 def attachment_kind(filename: str, mime_type: str) -> str:
+    mime_type = normalize_attachment_mime_type(filename, mime_type)
     if mime_type.startswith("image/"):
         return "image"
-    if mime_type.startswith("audio/"):
+    if mime_type.startswith("audio/") or audio_mime_type_from_filename(filename):
         return "audio"
     if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
         return "pdf"
     if mime_type.startswith("text/") or re.search(r"\.(txt|md|csv|json)$", filename, re.IGNORECASE):
         return "text"
     return "file"
+
+
+def normalize_attachment_metadata(item: dict) -> dict:
+    next_item = dict(item)
+    filename = str(next_item.get("name") or "")
+    mime_type = normalize_attachment_mime_type(filename, str(next_item.get("type") or "application/octet-stream"))
+    next_item["type"] = mime_type
+    detected_kind = attachment_kind(filename, mime_type)
+    if detected_kind == "audio" or not next_item.get("kind"):
+        next_item["kind"] = detected_kind
+    return next_item
 
 
 def attachment_text_from_bytes(file_bytes: bytes, kind: str, mime_type: str) -> str:
@@ -716,7 +766,7 @@ def save_uploaded_attachment(project_id: str, attachment: dict, file_bytes: byte
     ensure_store()
     attachment_id = project_item_id(attachment)
     attachment["id"] = attachment_id
-    metadata = slim_attachment(attachment)
+    metadata = normalize_attachment_metadata(slim_attachment(attachment))
     mime_type = str(metadata.get("type") or "application/octet-stream")
     db_file_bytes = file_bytes
 
@@ -833,6 +883,7 @@ def project_summary(project: dict) -> dict:
 def normalize_project(payload: dict, existing: dict | None = None) -> dict:
     timestamp = now_iso()
     base = existing.copy() if existing else {"id": str(payload.get("id") or uuid.uuid4().hex), "createdAt": timestamp}
+    attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
     base.update(
         {
             "title": str(payload.get("title") or "새 콘티"),
@@ -845,7 +896,7 @@ def normalize_project(payload: dict, existing: dict | None = None) -> dict:
             "brief": str(payload.get("brief") or ""),
             "messages": payload.get("messages") if isinstance(payload.get("messages"), list) else [],
             "scenes": payload.get("scenes") if isinstance(payload.get("scenes"), list) else [],
-            "attachments": payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
+            "attachments": [normalize_attachment_metadata(item) for item in attachments if isinstance(item, dict)],
             "generatedFiles": payload.get("generatedFiles") if isinstance(payload.get("generatedFiles"), list) else [],
             "scriptFiles": payload.get("scriptFiles") if isinstance(payload.get("scriptFiles"), list) else [],
             "draftScriptHistory": payload.get("draftScriptHistory") if isinstance(payload.get("draftScriptHistory"), list) else [],
@@ -866,8 +917,8 @@ def attachment_context(project: dict) -> str:
         if not isinstance(attachment, dict):
             continue
         name = str(attachment.get("name") or f"attachment-{index}")
-        kind = str(attachment.get("kind") or "file")
-        media_type = str(attachment.get("type") or "")
+        media_type = normalize_attachment_mime_type(name, str(attachment.get("type") or "application/octet-stream"))
+        kind = attachment_kind(name, media_type)
         size = str(attachment.get("size") or "")
         lines.append(f"{index}. {name} / {kind} / {media_type} / {size} bytes")
         text = str(attachment.get("text") or "").strip()
@@ -890,7 +941,8 @@ def openai_input_with_attachments(prompt: str, project: dict) -> object:
     for attachment in attachments:
         if not isinstance(attachment, dict):
             continue
-        kind = str(attachment.get("kind") or "file")
+        name = str(attachment.get("name") or "attachment")
+        kind = attachment_kind(name, str(attachment.get("type") or "application/octet-stream"))
         if kind == "image" and isinstance(attachment.get("dataUrl"), str) and attachment["dataUrl"]:
             content.append({"type": "input_image", "image_url": attachment["dataUrl"]})
             continue
@@ -1861,9 +1913,14 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         filename = str(fields.get("name") or file_info["filename"] or "attachment")
-        mime_type = str(fields.get("type") or file_info["content_type"] or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        mime_type = normalize_attachment_mime_type(
+            filename,
+            str(fields.get("type") or file_info["content_type"] or mimetypes.guess_type(filename)[0] or "application/octet-stream"),
+        )
         file_bytes = file_info["data"]
         kind = str(fields.get("kind") or attachment_kind(filename, mime_type))
+        if attachment_kind(filename, mime_type) == "audio":
+            kind = "audio"
         attachment = {
             "id": str(fields.get("id") or uuid.uuid4().hex),
             "name": filename,
@@ -2487,6 +2544,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         except (ValueError, binascii.Error):
             self.send_error_json(400, "Invalid audio file data")
             return
+        mime_type = normalize_attachment_mime_type(filename, mime_type)
 
         body, content_type = multipart_form_data(
             fields={"model": "gpt-4o-mini-transcribe", "response_format": "json"},

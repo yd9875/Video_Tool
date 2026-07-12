@@ -1260,11 +1260,38 @@ function readFileAsText(file) {
   });
 }
 
+const audioExtensionMimeTypes = {
+  aac: "audio/aac",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  mp4: "audio/mp4",
+  mpeg: "audio/mpeg",
+  mpga: "audio/mpeg",
+  oga: "audio/ogg",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  wav: "audio/wav",
+  webm: "audio/webm",
+};
+
+function attachmentExtension(name = "") {
+  const match = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : "";
+}
+
+function guessAttachmentMimeType(file) {
+  const explicitType = String(file?.type || "").trim();
+  if (explicitType && explicitType !== "application/octet-stream") return explicitType;
+  return audioExtensionMimeTypes[attachmentExtension(file?.name)] || explicitType || "application/octet-stream";
+}
+
 function getAttachmentKind(file) {
-  if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("audio/")) return "audio";
-  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
-  if (file.type.startsWith("text/") || /\.(txt|md|csv|json)$/i.test(file.name)) return "text";
+  const mimeType = guessAttachmentMimeType(file);
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/") || audioExtensionMimeTypes[attachmentExtension(file?.name)]) return "audio";
+  if (mimeType === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
+  if (mimeType.startsWith("text/") || /\.(txt|md|csv|json)$/i.test(file.name)) return "text";
   return "file";
 }
 
@@ -1293,12 +1320,13 @@ async function addAttachments(files) {
 
     try {
       const kind = getAttachmentKind(file);
+      const mimeType = guessAttachmentMimeType(file);
       const attachmentId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const formData = new FormData();
       formData.append("file", file, file.name);
       formData.append("id", attachmentId);
       formData.append("name", file.name);
-      formData.append("type", file.type || "application/octet-stream");
+      formData.append("type", mimeType);
       formData.append("kind", kind);
       formData.append("size", String(file.size));
       const attachment = await api(`/api/projects/${state.currentProjectId}/attachments`, {
