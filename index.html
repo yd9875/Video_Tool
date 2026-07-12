@@ -178,12 +178,12 @@
           <section class="brief-panel" aria-labelledby="brief-title">
             <div>
               <h2 id="brief-title">브리프</h2>
-              <p>제목, 주제, 흐름, 길이를 한곳에서 정리합니다.</p>
+              <p>프로젝트명, 주제, 흐름, 길이를 한곳에서 정리합니다.</p>
             </div>
             <div class="brief-fields">
               <label>
-                <span>제목</span>
-                <input id="projectTitle" aria-label="프로젝트 제목" />
+                <span>프로젝트명</span>
+                <textarea id="projectTitle" rows="2" aria-label="프로젝트명" spellcheck="false"></textarea>
               </label>
               <label>
                 <span>주제</span>
@@ -227,11 +227,12 @@
         <section class="draft-script-panel" aria-labelledby="draft-script-title">
           <div>
             <h2 id="draft-script-title">대본 초안 생성</h2>
-            <p>요구사항과 브리프, 첨부 자료를 바탕으로 대사만 채운 아이디어 보드를 만듭니다.</p>
+            <p>요구사항과 브리프, 첨부 파일을 바탕으로 아이디어 보드에 대사를 생성합니다.</p>
           </div>
           <div class="draft-script-workspace">
             <textarea id="draftScriptRequirements" rows="4" aria-label="대본 초안 생성 요구사항" placeholder="톤, 화자, 분량, 인터뷰 반영 방식 등 요구사항을 적어주세요."></textarea>
             <button class="button primary" id="generateDialogueDraft" type="button">생성</button>
+            <div class="draft-script-history" id="draftScriptHistory" aria-live="polite"></div>
           </div>
         </section>
 
@@ -245,15 +246,11 @@
                 </div>
                 <div class="panel-actions">
                   <button class="icon-button onepage-button" id="generateOnePage" type="button" aria-label="원페이지 콘티 생성">
-                    <span>One<br />Page</span>
+                    <span>콘티<br />생성</span>
                   </button>
                   <button class="icon-button" id="suggestPrompt" type="button" aria-label="질문 추천">
                     <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M9 18h6"></path>
-                      <path d="M10 22h4"></path>
-                      <path d="M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2Z"></path>
-                      <path d="M12 6v3"></path>
-                      <path d="M10.5 9.5h3"></path>
+                      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"></path>
                     </svg>
                   </button>
                 </div>

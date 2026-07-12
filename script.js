@@ -7,6 +7,7 @@ const state = {
   attachments: [],
   generatedFiles: [],
   scriptFiles: [],
+  draftScriptHistory: [],
   contentTypeLocked: false,
   aiTasks: [],
   aiTaskControllers: new Map(),
@@ -34,6 +35,7 @@ const elements = {
   attachmentList: $("#attachmentList"),
   generatedFileList: $("#generatedFileList"),
   draftScriptRequirements: $("#draftScriptRequirements"),
+  draftScriptHistory: $("#draftScriptHistory"),
   generateDialogueDraft: $("#generateDialogueDraft"),
   modeLabel: $("#modeLabel"),
   messages: $("#messages"),
@@ -527,7 +529,7 @@ function projectPayload() {
   const briefTopic = elements.briefTopicInput.value.trim();
   const briefFlow = elements.briefFlowInput.value.trim();
   return {
-    title: elements.projectTitle.value.trim() || "제목 없는 콘티",
+    title: elements.projectTitle.value.trim() || "프로젝트명 없는 콘티",
     platform: state.projectPlatform || defaultPlatform,
     duration: getDuration(),
     contentType: getContentType(),
@@ -540,6 +542,7 @@ function projectPayload() {
     attachments: state.attachments.map(attachmentForSave),
     generatedFiles: state.generatedFiles,
     scriptFiles: state.scriptFiles,
+    draftScriptHistory: state.draftScriptHistory,
     contentTypeLocked: state.contentTypeLocked,
   };
 }
@@ -548,7 +551,7 @@ function getBrief() {
   const briefTopic = elements.briefTopicInput.value.trim();
   const briefFlow = elements.briefFlowInput.value.trim();
   return {
-    title: elements.projectTitle.value.trim() || "제목 없는 콘티",
+    title: elements.projectTitle.value.trim() || "프로젝트명 없는 콘티",
     platform: state.projectPlatform || defaultPlatform,
     duration: getDuration(),
     contentType: getContentType(),
@@ -643,7 +646,7 @@ async function saveCurrentProject() {
 }
 
 function projectTitleLabel(project = {}) {
-  return String(project.title || "제목 없는 프로젝트").trim() || "제목 없는 프로젝트";
+  return String(project.title || "프로젝트명 없는 프로젝트").trim() || "프로젝트명 없는 프로젝트";
 }
 
 function projectsByExactTitle(title) {
@@ -668,7 +671,7 @@ async function createProjectTaskContext() {
   if (!projectIdAtStart && titleMatches.length > 1) {
     state.contentTypeLocked = false;
     syncContentTypeLock();
-    throw new Error("동일한 제목의 프로젝트가 여러 개 있습니다. 프로젝트 목록에서 작업할 프로젝트를 다시 선택한 뒤 AI 작업을 실행해주세요.");
+    throw new Error("동일한 프로젝트명의 프로젝트가 여러 개 있습니다. 프로젝트 목록에서 작업할 프로젝트를 다시 선택한 뒤 AI 작업을 실행해주세요.");
   }
   const resolvedProjectId = projectIdAtStart || resolveProjectIdByExactTitle(payload.title);
   setSaveStatus("AI 작업용 프로젝트 저장 중", "pending");
@@ -754,8 +757,8 @@ function renderProjectList() {
       const isActive = project.id === state.currentProjectId;
       const updated = formatDate(project.updatedAt);
       return `
-        <div class="project-item ${isActive ? "active" : ""}" data-project-id="${project.id}">
-          <button class="project-open" type="button" data-project-id="${project.id}">
+        <div class="project-item ${isActive ? "active" : ""}" data-project-id="${project.id}" data-title="${escapeHtml(project.title)}">
+          <button class="project-open" type="button" data-project-id="${project.id}" title="${escapeHtml(project.title)}">
             <strong>${escapeHtml(project.title)}</strong>
             <span>${escapeHtml(project.duration)} · ${updated}</span>
           </button>
@@ -831,6 +834,7 @@ function blankProject() {
     attachments: [],
     generatedFiles: [],
     scriptFiles: [],
+    draftScriptHistory: [],
     contentTypeLocked: false,
   };
 }
@@ -844,6 +848,7 @@ function hydrateProject(project) {
   state.attachments = Array.isArray(project.attachments) ? project.attachments : [];
   state.generatedFiles = Array.isArray(project.generatedFiles) ? project.generatedFiles.map(normalizeGeneratedFile) : [];
   state.scriptFiles = Array.isArray(project.scriptFiles) ? project.scriptFiles.map(normalizeScriptFile) : [];
+  state.draftScriptHistory = Array.isArray(project.draftScriptHistory) ? project.draftScriptHistory.map(normalizeDraftScriptRecord) : [];
   state.contentTypeLocked = Boolean(project.contentTypeLocked);
 
   elements.projectTitle.value = project.title ?? "";
@@ -860,6 +865,7 @@ function hydrateProject(project) {
   renderMessages();
   renderAttachments();
   renderGeneratedFiles();
+  renderDraftScriptHistory();
   renderScenes();
   renderProjectList();
   syncProjectActionLocks();
@@ -952,6 +958,7 @@ async function boot() {
       attachments: [],
       generatedFiles: [],
       scriptFiles: [],
+      draftScriptHistory: [],
       contentTypeLocked: false,
     });
   }
@@ -1078,7 +1085,7 @@ function safeFilename(value = "project") {
 }
 
 function sceneImageFilename(index) {
-  const title = safeFilename(elements.projectTitle.value || "제목 없는 프로젝트") || "제목 없는 프로젝트";
+  const title = safeFilename(elements.projectTitle.value || "프로젝트명 없는 프로젝트") || "프로젝트명 없는 프로젝트";
   const sceneNumber = String(index + 1).padStart(2, "0");
   return `${title} - ${sceneNumber}.png`;
 }
@@ -1652,6 +1659,34 @@ function normalizeScriptFile(file = {}) {
   };
 }
 
+function normalizeDraftScriptRecord(record = {}) {
+  return {
+    id: String(record.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    requirements: String(record.requirements || "요구사항 없음"),
+    createdAt: record.createdAt || new Date().toISOString(),
+  };
+}
+
+function renderDraftScriptHistory() {
+  if (!elements.draftScriptHistory) return;
+  if (!state.draftScriptHistory.length) {
+    elements.draftScriptHistory.innerHTML = "";
+    return;
+  }
+
+  elements.draftScriptHistory.innerHTML = state.draftScriptHistory
+    .map((record) => {
+      const normalized = normalizeDraftScriptRecord(record);
+      return `
+        <div class="draft-history-item">
+          <span>${escapeHtml(formatDateTime(normalized.createdAt))}</span>
+          <p>${escapeHtml(normalized.requirements).replaceAll("\n", "<br>")}</p>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function renderScriptFiles() {
   if (!elements.scriptFileList) return;
   if (!state.scriptFiles.length) {
@@ -2047,7 +2082,7 @@ function buildDialogueDraftPrompt(requirements, project) {
 ${requirements || "별도 요구사항 없음"}
 
 [브리프 정보]
-제목: ${project.title || ""}
+프로젝트명: ${project.title || ""}
 매체: ${project.platform || ""}
 길이: ${project.duration || ""}
 작업 유형: ${formatLabel}
@@ -2134,8 +2169,17 @@ async function generateDialogueDraft() {
       throw new Error("AI 응답에서 대사 장면을 찾지 못했습니다");
     }
 
+    const draftRecord = normalizeDraftScriptRecord({
+      requirements: requirements || "요구사항 없음",
+      createdAt: new Date().toISOString(),
+    });
+
     await updateProjectData(context.projectId, (project) => {
       project.scenes = scenes;
+      project.draftScriptHistory = Array.isArray(project.draftScriptHistory)
+        ? project.draftScriptHistory.map(normalizeDraftScriptRecord)
+        : [];
+      project.draftScriptHistory = [draftRecord, ...project.draftScriptHistory].slice(0, 20);
       appendProjectMessage(project, "assistant", result.text || "대사만 작성된 아이디어 보드를 생성했습니다.");
       return project;
     });
@@ -2166,9 +2210,9 @@ function buildDialogueScriptText(project = projectPayload()) {
     })
     .join("\n\n");
 
-  return `# ${project.title || "제목 없는 콘티"} - 대본
+  return `# ${project.title || "프로젝트명 없는 콘티"} - 대본
 
-프로젝트: ${project.title || ""}
+프로젝트명: ${project.title || ""}
 매체: ${project.platform || ""}
 길이: ${project.duration || ""}
 작업 유형: ${formatLabel}
@@ -2602,6 +2646,7 @@ elements.resetProject.addEventListener("click", () => {
   state.attachments = [];
   state.generatedFiles = [];
   state.scriptFiles = [];
+  state.draftScriptHistory = [];
   state.contentTypeLocked = false;
   elements.projectTitle.value = "";
   elements.briefTopicInput.value = defaultBrief;
@@ -2614,6 +2659,7 @@ elements.resetProject.addEventListener("click", () => {
   renderMessages();
   renderAttachments();
   renderGeneratedFiles();
+  renderDraftScriptHistory();
   renderScenes();
   scheduleSave();
 });

@@ -150,6 +150,7 @@ p {
 }
 
 .project-item {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 2rem;
   grid-template-rows: repeat(2, 2rem);
@@ -168,6 +169,26 @@ p {
 .project-item.active {
   border-color: rgba(35, 122, 115, 0.2);
   background: var(--panel-soft);
+}
+
+.project-item:hover::after {
+  content: attr(data-title);
+  position: absolute;
+  left: calc(100% + 0.5rem);
+  top: 0.35rem;
+  z-index: 80;
+  max-width: min(24rem, 52vw);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgba(35, 122, 115, 0.2);
+  border-radius: 0.45rem;
+  background: #fff;
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 850;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .project-open {
@@ -475,7 +496,7 @@ input:disabled {
 
 .onepage-button span {
   display: block;
-  font-size: 0.58rem;
+  font-size: 0.62rem;
   font-weight: 950;
   line-height: 0.9;
   text-align: center;
@@ -755,6 +776,33 @@ h2 {
 
 .draft-script-workspace .button {
   justify-self: end;
+}
+
+.draft-script-history {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.draft-history-item {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgba(35, 122, 115, 0.12);
+  border-radius: 0.45rem;
+  background: rgba(240, 244, 243, 0.58);
+}
+
+.draft-history-item span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.draft-history-item p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .planning-row {

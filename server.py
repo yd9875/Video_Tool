@@ -848,6 +848,7 @@ def normalize_project(payload: dict, existing: dict | None = None) -> dict:
             "attachments": payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
             "generatedFiles": payload.get("generatedFiles") if isinstance(payload.get("generatedFiles"), list) else [],
             "scriptFiles": payload.get("scriptFiles") if isinstance(payload.get("scriptFiles"), list) else [],
+            "draftScriptHistory": payload.get("draftScriptHistory") if isinstance(payload.get("draftScriptHistory"), list) else [],
             "contentTypeLocked": bool(payload.get("contentTypeLocked")),
             "updatedAt": timestamp,
         }
@@ -1000,7 +1001,7 @@ subtitle은 화면에 올라갈 자막 단위로 짧게 줄을 나누고, visual
 assistant_message는 간결하게 작성한다.
 
 [프로젝트]
-제목: {project.get('title', '제목 없는 콘티')}
+프로젝트명: {project.get('title', '프로젝트명 없는 콘티')}
 플랫폼: {project.get('platform', '')}
 길이: {project.get('duration', '')}
 작업 유형: {format_context}
@@ -1047,7 +1048,7 @@ def describe_project_for_ai(project: dict) -> str:
     longform_mode = str(project.get("longformMode") or "")
     format_context = f"{content_type}" + (f" / {longform_mode}" if longform_mode else "")
     return f"""[프로젝트]
-제목: {project.get('title', '제목 없는 콘티')}
+프로젝트명: {project.get('title', '프로젝트명 없는 콘티')}
 플랫폼: {project.get('platform', '')}
 길이: {project.get('duration', '')}
 작업 유형: {format_context}
@@ -1065,7 +1066,7 @@ def describe_project_for_ai(project: dict) -> str:
 
 def build_suggestion_prompt(project: dict) -> str:
     return f"""너는 홍보영상 아이디어 보드 기획 파트너다.
-아래 프로젝트의 제목, 플랫폼, 길이, 브리프, 현재 장면 흐름을 종합적으로 분석해라.
+아래 프로젝트의 프로젝트명, 플랫폼, 길이, 브리프, 현재 장면 흐름을 종합적으로 분석해라.
 사용자가 다음으로 AI에게 물어보면 가장 도움이 될 질문 하나만 제안해라.
 질문은 한국어 한 문장으로, 너무 포괄적이지 않게 현재 아이디어 보드의 약점이나 다음 작업을 겨냥해야 한다.
 
@@ -1094,7 +1095,7 @@ def build_onepage_prompt(project: dict) -> str:
 - 작업 유형이 "숏폼 (보도자료 등)"이면 보도자료/첨부자료를 요약한 9:16 쇼츠 콘티처럼 정리한다.
 - 작업 유형이 "롱폼 (홍보영상, 인터뷰 등)"이면 대본/인터뷰/첨부자료 기반의 16:9 롱폼 챕터 콘티처럼 정리한다.
 - image_prompt는 첨부된 원페이지 콘티 참고 양식의 구조를 따르는 16:9 문서형 storyboard sheet 이미지 생성 프롬프트여야 한다.
-- image_prompt의 레이아웃 지시: 상단 전체 폭의 메타 정보 바(Project Title, Platform, Duration, Content Type, Long-form Mode), 그 아래 번호가 붙은 장면 카드 그리드, 각 카드 상단의 장면 제목과 시간, 중앙의 시각 장면 이미지, 하단의 연출/내용/BGM-SFX 요약 줄을 포함한다.
+- image_prompt의 레이아웃 지시: 상단 전체 폭의 메타 정보 바(Project Name, Platform, Duration, Content Type, Long-form Mode), 그 아래 번호가 붙은 장면 카드 그리드, 각 카드 상단의 장면 제목과 시간, 중앙의 시각 장면 이미지, 하단의 연출/내용/BGM-SFX 요약 줄을 포함한다.
 - 장면 카드 수와 그리드 분할 수는 현재 아이디어 보드 장면 수에 맞춰 유연하게 정한다. 특정 분할 수를 고정하지 않는다.
 - 장면이 많으면 3열 그리드 기반으로 촘촘하지만 읽기 쉬운 원페이지 구성을 만들고, 장면이 적으면 카드 크기를 크게 잡아 균형 있게 배치한다.
 - image_prompt에는 실제 제품/인물/장면의 시각 단서, 전체 레이아웃, 색감, 비율을 구체적으로 적는다. 다만 읽어야 하는 긴 본문은 넣지 말고, 짧은 한국어 라벨만 사용한다.
@@ -1143,7 +1144,7 @@ The uploaded reference image is the template standard. Treat it as a locked form
 Template lock rules, very important:
 - Keep the same overall table size, proportions, margins, borders, grid-line thickness, cell shapes, and worksheet layout as the reference image.
 - Keep the same typography style: bold Korean sans-serif headers, regular Korean sans-serif body text, similar font sizes, line heights, weights, and alignment.
-- Keep the same top metadata table: project cell, large project title cell, platform, total duration, content type, long-form mode, and purpose/description cells.
+- Keep the same top metadata table: project cell, large project name cell, platform, total duration, content type, long-form mode, and purpose/description cells.
 - Keep the same second row table: scene number, scene title, estimated time, and one-line scene description.
 - Keep the same right-side column width and stacked box structure. The right column must contain these fixed sections in the same style:
   1. Narration / dialogue with a small microphone-style icon.
@@ -1176,7 +1177,7 @@ Content filling rules:
 - If the content type is general storyboard, emphasize planning clarity, message structure, and scene intent.
 
 Project:
-- Title: {project.get('title', 'Untitled storyboard')}
+- Project Name: {project.get('title', 'Untitled storyboard')}
 - Platform: {project.get('platform', '')}
 - Duration: {project.get('duration', '')}
 - Content type: {content_type}
@@ -1211,7 +1212,7 @@ Short-form sketch direction:
 Aspect: 9:16 vertical framing.
 
 Project:
-- Title: {project.get('title', 'Untitled storyboard')}
+- Project Name: {project.get('title', 'Untitled storyboard')}
 - Platform: {project.get('platform', '')}
 - Duration: {project.get('duration', '')}
 - Content type: {content_type}
