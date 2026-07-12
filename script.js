@@ -566,6 +566,17 @@ function getContentType() {
   return elements.contentTypeInputs.find((input) => input.checked)?.value || "범용 콘티";
 }
 
+function contentTypeDisplayLabel(value = "") {
+  if (value === "롱폼 (홍보영상, 인터뷰 등)") return "롱폼 (인터뷰 등)";
+  if (value === "범용 콘티") return "기타";
+  return value || "기타";
+}
+
+function formatContentTypeLabel(contentType = "", longformMode = "") {
+  const label = contentTypeDisplayLabel(contentType);
+  return longformMode ? `${label} · ${longformMode}` : label;
+}
+
 function getLongformMode() {
   return getContentType() === "롱폼 (홍보영상, 인터뷰 등)"
     ? elements.longformModeInputs.find((input) => input.checked)?.value || "Narration only"
@@ -860,7 +871,7 @@ function hydrateProject(project) {
   elements.briefTopicInput.value = project.briefTopic ?? project.brief ?? defaultBrief;
   elements.briefFlowInput.value = project.briefFlow ?? "";
 
-  elements.modeLabel.textContent = "작업 유형, 브리프, 첨부 파일, 장면을 함께 분석";
+  elements.modeLabel.innerHTML = "AI와 자유롭게 대화하며 아이디어 보드를 완성해보세요!<br />(작업 유형, 브리프, 첨부파일이 함께 분석됩니다.)";
 
   renderMessages();
   renderAttachments();
@@ -1826,7 +1837,7 @@ function moveScene(index, direction) {
 
 function updateSummary() {
   const { title, duration, contentType, longformMode } = getBrief();
-  const formatLabel = longformMode ? `${contentType} · ${longformMode}` : contentType;
+  const formatLabel = formatContentTypeLabel(contentType, longformMode);
   elements.storySummary.innerHTML = `
     <div>
       <span>프로젝트</span>
@@ -2065,7 +2076,7 @@ async function generateOnePageFiles() {
 }
 
 function buildDialogueDraftPrompt(requirements, project) {
-  const formatLabel = project.longformMode ? `${project.contentType} / ${project.longformMode}` : project.contentType;
+  const formatLabel = project.longformMode ? `${contentTypeDisplayLabel(project.contentType)} / ${project.longformMode}` : contentTypeDisplayLabel(project.contentType);
   return `아이디어보드 생성.
 
 아래 브리프, 작업 유형, 첨부파일 내용을 반영해서 대본 초안용 아이디어 보드를 만들어줘.
@@ -2202,7 +2213,7 @@ async function generateDialogueDraft() {
 }
 
 function buildDialogueScriptText(project = projectPayload()) {
-  const formatLabel = project.longformMode ? `${project.contentType} / ${project.longformMode}` : project.contentType;
+  const formatLabel = project.longformMode ? `${contentTypeDisplayLabel(project.contentType)} / ${project.longformMode}` : contentTypeDisplayLabel(project.contentType);
   const dialogueLines = (project.scenes || [])
     .map((scene, index) => {
       const normalized = ensureSceneShape(scene);
@@ -2300,7 +2311,7 @@ function strengthenStoryboard(userText) {
 
 function buildExportText() {
   const brief = getBrief();
-  const formatLabel = brief.longformMode ? `${brief.contentType} / ${brief.longformMode}` : brief.contentType;
+  const formatLabel = brief.longformMode ? `${contentTypeDisplayLabel(brief.contentType)} / ${brief.longformMode}` : contentTypeDisplayLabel(brief.contentType);
   const sceneText = state.scenes
     .map(
       (scene, index) => `
@@ -2328,7 +2339,7 @@ ${sceneText}
 
 function buildExportTextV2() {
   const brief = getBrief();
-  const formatLabel = brief.longformMode ? `${brief.contentType} / ${brief.longformMode}` : brief.contentType;
+  const formatLabel = brief.longformMode ? `${contentTypeDisplayLabel(brief.contentType)} / ${brief.longformMode}` : contentTypeDisplayLabel(brief.contentType);
   const sceneText = state.scenes
     .map((scene, index) => {
       const normalized = ensureSceneShape(scene);
