@@ -8,6 +8,8 @@ import binascii
 import io
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -461,17 +463,15 @@ AUDIO_MIME_TYPE_ALIASES = {
 }
 
 SUPPORTED_TRANSCRIPTION_EXTENSIONS = {
-    ".flac",
     ".m4a",
     ".mp3",
     ".mp4",
     ".mpeg",
     ".mpga",
-    ".oga",
-    ".ogg",
     ".wav",
     ".webm",
 }
+OPENAI_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024
 
 
 def audio_mime_type_from_filename(filename: str) -> str:
@@ -528,6 +528,82 @@ def safe_transcription_filename(filename: str, mime_type: str, file_bytes: bytes
             "audio/webm": ".webm",
         }.get(mime_type, ".mp3")
     return f"audio-upload{suffix}"
+
+
+def compact_ffmpeg_error(stderr: bytes) -> str:
+    detail = stderr.decode("utf-8", errors="replace").strip()
+    if not detail:
+        return "오디오 스트림을 해석할 수 없습니다."
+    lines = [line.strip() for line in detail.splitlines() if line.strip()]
+    return " / ".join(lines[-3:])[:500]
+
+
+def prepare_audio_for_transcription(filename: str, mime_type: str, file_bytes: bytes) -> tuple[str, str, bytes, bool]:
+    source_suffix = os.path.splitext(str(filename or ""))[1].lower()
+    sniffed = sniff_audio_mime_type(file_bytes)
+    detected_suffix = sniffed[1] if sniffed else source_suffix
+    detected_mime_type = sniffed[0] if sniffed else mime_type
+    ffmpeg_path = shutil.which("ffmpeg")
+
+    if ffmpeg_path:
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    "pipe:0",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-codec:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "64k",
+                    "-f",
+                    "mp3",
+                    "pipe:1",
+                ],
+                input=file_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("오디오 변환 시간이 3분을 초과했습니다. 파일을 더 짧게 나누어 다시 시도해주세요.") from error
+
+        if result.returncode != 0 or not result.stdout:
+            detail = compact_ffmpeg_error(result.stderr)
+            raise ValueError(
+                f"오디오를 디코딩하지 못했습니다. 파일이 손상되었거나 지원되지 않는 코덱일 수 있습니다. "
+                f"파일: {filename}, 감지 형식: {detected_suffix or detected_mime_type or '알 수 없음'}. {detail}"
+            )
+
+        if len(result.stdout) > OPENAI_TRANSCRIPTION_MAX_BYTES:
+            raise ValueError(
+                f"전사용으로 변환한 파일이 OpenAI의 25MB 제한을 초과합니다 "
+                f"({len(result.stdout) / 1024 / 1024:.1f}MB). 원본을 여러 파일로 나누어주세요."
+            )
+        return "audio/mpeg", "audio-upload.mp3", result.stdout, True
+
+    if detected_suffix not in SUPPORTED_TRANSCRIPTION_EXTENSIONS:
+        supported = ", ".join(sorted(extension.lstrip(".") for extension in SUPPORTED_TRANSCRIPTION_EXTENSIONS))
+        raise ValueError(
+            f"현재 전사에서 지원하지 않는 오디오 형식입니다. 파일: {filename}, "
+            f"감지 형식: {detected_suffix or detected_mime_type or '알 수 없음'}. 지원 형식: {supported}"
+        )
+    if len(file_bytes) > OPENAI_TRANSCRIPTION_MAX_BYTES:
+        raise ValueError(
+            f"오디오 파일이 OpenAI의 25MB 제한을 초과합니다 "
+            f"({len(file_bytes) / 1024 / 1024:.1f}MB). 파일을 더 작게 압축하거나 나누어주세요."
+        )
+    return detected_mime_type, safe_transcription_filename(filename, detected_mime_type, file_bytes), file_bytes, False
 
 
 def slim_attachment(item: dict) -> dict:
@@ -2615,10 +2691,31 @@ class StoryboardHandler(BaseHTTPRequestHandler):
         if not file_bytes:
             self.send_error_json(400, "Audio file data is empty")
             return
-        sniffed_audio = sniff_audio_mime_type(file_bytes)
-        if sniffed_audio:
-            mime_type = sniffed_audio[0]
-        upload_filename = safe_transcription_filename(filename, mime_type, file_bytes)
+        source_size = len(file_bytes)
+        declared_size = int(attachment.get("size") or 0)
+        if declared_size and declared_size != source_size:
+            self.send_error_json(
+                422,
+                f"저장된 오디오 파일 크기가 원본 정보와 다릅니다 "
+                f"(원본 {declared_size} bytes, 저장본 {source_size} bytes). 첨부 파일을 삭제한 뒤 다시 올려주세요.",
+            )
+            return
+        try:
+            mime_type, upload_filename, file_bytes, converted = prepare_audio_for_transcription(
+                filename,
+                mime_type,
+                file_bytes,
+            )
+        except ValueError as error:
+            self.send_error_json(400, str(error))
+            return
+
+        safe_print(
+            "Transcription upload prepared: "
+            f"project={project_id or '-'} attachment={attachment_id or '-'} "
+            f"filename={filename!r} mime={mime_type} source_bytes={source_size} "
+            f"upload_bytes={len(file_bytes)} converted={converted}"
+        )
 
         body, content_type = multipart_form_data(
             fields={"model": "gpt-4o-mini-transcribe", "response_format": "json"},
@@ -2639,7 +2736,15 @@ class StoryboardHandler(BaseHTTPRequestHandler):
                 response_payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
-            self.send_error_json(error.code, summarize_openai_error(detail))
+            message = summarize_openai_error(detail)
+            if "corrupted or unsupported" in message.lower():
+                upload_description = "변환된 오디오" if converted else "오디오 원본"
+                message = (
+                    f"OpenAI가 {upload_description}을 읽지 못했습니다. 파일: {filename}, "
+                    f"전송 형식: {mime_type}, 전송 크기: {len(file_bytes) / 1024 / 1024:.1f}MB. "
+                    f"원본 오류: {message}"
+                )
+            self.send_error_json(error.code, message)
             return
         except URLError as error:
             self.send_error_json(502, f"OpenAI transcription failed: {error.reason}")

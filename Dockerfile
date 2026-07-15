@@ -6,7 +6,7 @@ ENV APP_RELEASE_VERSION=${APP_RELEASE_VERSION}
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-nanum \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-nanum \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
