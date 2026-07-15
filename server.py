@@ -2023,7 +2023,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         provider = str(payload.get("provider") or "openai").strip()
-        model = str(payload.get("model") or "gpt-5-mini").strip()
+        model = str(payload.get("model") or "gpt-5.6-terra").strip()
         user_message = str(payload.get("message") or "").strip()
         try:
             project = project_from_payload(payload)
@@ -2165,7 +2165,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         provider = str(payload.get("provider") or "openai").strip()
-        model = str(payload.get("model") or "gpt-5-mini").strip()
+        model = str(payload.get("model") or "gpt-5.6-terra").strip()
         try:
             project = project_from_payload(payload)
         except DatabaseUnavailable as error:
@@ -2326,7 +2326,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         provider = str(payload.get("provider") or "openai").strip()
-        model = str(payload.get("model") or "gpt-5-mini").strip()
+        model = str(payload.get("model") or "gpt-5.6-terra").strip()
         try:
             project = project_from_payload(payload)
         except DatabaseUnavailable as error:
@@ -2436,7 +2436,7 @@ class StoryboardHandler(BaseHTTPRequestHandler):
             return
 
         provider = str(payload.get("provider") or "openai").strip()
-        model = str(payload.get("model") or "gpt-5-mini").strip()
+        model = str(payload.get("model") or "gpt-5.6-terra").strip()
         try:
             project = project_from_payload(payload)
         except DatabaseUnavailable as error:

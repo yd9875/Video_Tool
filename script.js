@@ -77,6 +77,10 @@ const imageProviderStorageKey = "conti_ai_image_provider";
 const imageModelStorageKey = "conti_ai_openai_image_model";
 const chatModelOptions = {
   openai: [
+    ["gpt-5.6", "GPT-5.6"],
+    ["gpt-5.6-sol", "GPT-5.6 Sol"],
+    ["gpt-5.6-terra", "GPT-5.6 Terra"],
+    ["gpt-5.6-luna", "GPT-5.6 Luna"],
     ["gpt-5.5", "GPT-5.5"],
     ["gpt-5-mini", "GPT-5 mini"],
     ["gpt-5", "GPT-5"],
@@ -238,7 +242,7 @@ async function loadRuntimeInfo() {
 function loadApiSettings() {
   const savedChatProvider = localStorage.getItem(chatProviderStorageKey) || "openai";
   const savedChatKey = localStorage.getItem(chatApiKeyStorageKey) || "";
-  const savedChatModel = localStorage.getItem(chatModelStorageKey) || "gpt-5-mini";
+  const savedChatModel = localStorage.getItem(chatModelStorageKey) || "gpt-5.6-terra";
   const savedImageProvider = localStorage.getItem(imageProviderStorageKey) || "openai";
   const savedImageKey = localStorage.getItem(imageApiKeyStorageKey) || "";
   const savedImageModel = localStorage.getItem(imageModelStorageKey) || "gpt-image-1";
@@ -357,7 +361,7 @@ function isSceneRequest(userText) {
 function saveApiSettings() {
   const chatProvider = elements.chatProviderInput.value || "openai";
   const chatKey = elements.chatApiKeyInput.value.trim();
-  const chatModel = elements.chatModelInput.value.trim() || "gpt-5-mini";
+  const chatModel = elements.chatModelInput.value.trim() || "gpt-5.6-terra";
   const imageProvider = elements.imageProviderInput.value || "openai";
   const imageKey = elements.imageApiKeyInput.value.trim();
   const imageModel = elements.imageModelInput.value.trim() || imageModelOptions[imageProvider]?.[0]?.[0] || "gpt-image-1";
@@ -383,7 +387,7 @@ function clearApiSettings() {
   elements.imageApiKeyInput.value = "";
   elements.chatProviderInput.value = "openai";
   elements.imageProviderInput.value = "openai";
-  renderChatModelOptions("openai", "gpt-5-mini");
+  renderChatModelOptions("openai", "gpt-5.6-terra");
   renderImageModelOptions("openai", "gpt-image-1");
   updateApiStatus("키 삭제됨");
 }
@@ -1902,7 +1906,7 @@ async function generateAiReply(userText, context) {
   const apiKey = elements.chatApiKeyInput.value.trim();
   if (!apiKey) return null;
 
-  const model = elements.chatModelInput.value.trim() || "gpt-5-mini";
+  const model = elements.chatModelInput.value.trim() || "gpt-5.6-terra";
   localStorage.setItem(chatModelStorageKey, model);
   const taskId = `chat-reply-${context.projectId}`;
   updateApiStatus("AI 응답 생성 중");
@@ -2086,7 +2090,7 @@ async function generateOnePageFiles() {
       body: JSON.stringify({
         apiKey,
         provider: elements.chatProviderInput.value || "openai",
-        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        model: elements.chatModelInput.value.trim() || "gpt-5.6-terra",
         project: context.project,
         deferImage: true,
         imageSettings: {
@@ -2206,7 +2210,7 @@ async function generateDialogueDraft() {
       body: JSON.stringify({
         apiKey,
         provider: elements.chatProviderInput.value || "openai",
-        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        model: elements.chatModelInput.value.trim() || "gpt-5.6-terra",
         message: prompt,
         project: context.project,
         imageSettings: {
@@ -2487,7 +2491,7 @@ async function generateOnePageFilesStable() {
       body: JSON.stringify({
         apiKey,
         provider: elements.chatProviderInput.value || "openai",
-        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        model: elements.chatModelInput.value.trim() || "gpt-5.6-terra",
         project: context.project,
         deferImage: true,
         imageSettings,
@@ -2619,7 +2623,7 @@ elements.suggestPrompt.addEventListener("click", async () => {
       body: JSON.stringify({
         apiKey,
         provider: elements.chatProviderInput.value || "openai",
-        model: elements.chatModelInput.value.trim() || "gpt-5-mini",
+        model: elements.chatModelInput.value.trim() || "gpt-5.6-terra",
         project: context.project,
       }),
     });
